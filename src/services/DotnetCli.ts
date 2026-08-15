@@ -17,7 +17,7 @@ export class DotnetCli {
             const { stdout, stderr } = await execAsync(command, {
                 cwd,
                 timeout: timeoutMs,
-                maxBuffer: 10 * 1024 * 2014,
+                maxBuffer: 10 * 1024 * 1024,
             });
 
             if (stderr && !stdout) {
@@ -80,7 +80,7 @@ export class DotnetCli {
    * Restore çalıştırır
    */
     async restore(workspaceRoot: string): Promise<void> {
-        await this.run("dotnet resetore", workspaceRoot);
+        await this.run("dotnet restore", workspaceRoot);
     }
 
     /**
@@ -106,56 +106,105 @@ export class DotnetCli {
         jsonOutput: string,
         type: "vulnerable" | "outdated" | "deprecated"
     ): PackageInfo[] {
+
+        const severityOrder = ["Critical", "High", "Moderate", "Low"];
+
         if (!jsonOutput) {
             return [];
         }
 
         try {
             const data = JSON.parse(jsonOutput);
-            const packages: PackageInfo[] = [];
+            const packageMap = new Map<string, PackageInfo>(); // duplicate engellemek için
 
             const projects = data.projects || [];
 
             for (const project of projects) {
-
                 const projectPath = project.path || project.projectPath || "";
-                const projectName = projectPath.split(/[\\/]/).pop()?.replace(".csproj", "") || "Unknown";
+                const projectName =
+                    projectPath.split(/[\\/]/).pop()?.replace(".csproj", "") || "Unknown";
 
                 const frameworks = project.frameworks || [];
 
                 for (const framework of frameworks) {
                     const topLevel = framework.topLevelPackages || [];
-                    const transitive = framework.transitivePackage || [];
+                    const transitive = framework.transitivePackages || []; // ← düzeltildi
 
                     const all = [
                         ...topLevel.map((p: any) => ({ ...p, isTransitive: false })),
-                        ...transitive.map((p: any) => ({ ...p, isTransitive: true }))
+                        ...transitive.map((p: any) => ({ ...p, isTransitive: true })),
                     ];
 
                     for (const pkg of all) {
-
                         const id = pkg.id || pkg.name;
-                        const version = pkg.requestedVersion || pkg.resolvedVersion || pkg.version;
+                        const version =
+                            pkg.requestedVersion || pkg.resolvedVersion || pkg.version;
 
                         if (!id || !version) continue;
 
-                        packages.push({
-                            id,
-                            version,
-                            latestVersion: pkg.latestVersion,
-                            isVulnerable: type === "vulnerable",
-                            isOutdated: type === "outdated",
-                            isDeprecated: type === "deprecated",
-                            severity: pkg.severity,
-                            advisoryUrl: pkg.advisoryUrl || pkg.vulnerabilityUrl,
-                            projects: [projectName],
-                            isTransitive: pkg.isTransitive
-                        });
+                        // Vulnerability bilgisini çıkar
+                        let severity: "Critical" | "High" | "Moderate" | "Low" | undefined;
+                        let advisoryUrl: string | undefined;
+
+                        if (pkg.vulnerabilities && Array.isArray(pkg.vulnerabilities) && pkg.vulnerabilities.length > 0) {
+                            const severityOrder = ["Critical", "High", "Moderate", "Low"] as const;
+
+                            const sorted = [...pkg.vulnerabilities].sort(
+                                (a: any, b: any) =>
+                                    severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity)
+                            );
+
+                            const rawSeverity = sorted[0].severity;
+                            if (severityOrder.includes(rawSeverity)) {
+                                severity = rawSeverity as "Critical" | "High" | "Moderate" | "Low";
+                            }
+
+                            advisoryUrl =
+                                sorted[0].advisoryurl ||
+                                sorted[0].advisoryUrl ||
+                                sorted[0].url;
+                        } else {
+                            const raw = pkg.severity;
+                            if (raw === "Critical" || raw === "High" || raw === "Moderate" || raw === "Low") {
+                                severity = raw;
+                            }
+                            advisoryUrl = pkg.advisoryUrl || pkg.vulnerabilityUrl || pkg.advisoryurl;
+                        }
+
+                        const existing = packageMap.get(id.toLowerCase());
+
+                        if (!existing) {
+                            packageMap.set(id.toLowerCase(), {
+                                id,
+                                version,
+                                latestVersion: pkg.latestVersion,
+                                isVulnerable: type === "vulnerable",
+                                isOutdated: type === "outdated",
+                                isDeprecated: type === "deprecated",
+                                severity,
+                                advisoryUrl,
+                                projects: [projectName],
+                                isTransitive: pkg.isTransitive,
+                            });
+                        } else {
+                            if (!existing.projects.includes(projectName)) {
+                                existing.projects.push(projectName);
+                            }
+                            if (pkg.latestVersion && !existing.latestVersion) {
+                                existing.latestVersion = pkg.latestVersion;
+                            }
+                            if (severity && (!existing.severity ||
+                                ["Critical", "High", "Moderate", "Low"].indexOf(severity) <
+                                ["Critical", "High", "Moderate", "Low"].indexOf(existing.severity || "Low"))) {
+                                existing.severity = severity;
+                                existing.advisoryUrl = advisoryUrl;
+                            }
+                        }
                     }
                 }
             }
 
-            return packages;
+            return Array.from(packageMap.values());
         } catch (error) {
             console.error("JSON parse hatası:", error);
             return [];

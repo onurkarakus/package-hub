@@ -108,7 +108,7 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						const vulnerableKey = `vulnerable:${targetPath}`;
-						const outdatedKey = `outdated: ${targetPath}`;
+						const outdatedKey = `outdated:${targetPath}`;
 
 						let vulnerable = cacheService.get<any[]>(vulnerableKey);
 						let outdated = cacheService.get<any[]>(outdatedKey);
