@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
 import { DotnetCli } from "./services/DotnetCli";
 import { WorkspaceScanner } from "./services/WorkspaceScanner";
 import { logger } from "./utils/logger";
@@ -11,19 +11,20 @@ import { PackageDecorationProvider } from "./providers/PackageDecorationProvider
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
 
-// Extension aktif olduğunda çalışan giriş noktası.
 export function activate(context: vscode.ExtensionContext) {
-
 	logger.info("PackageHub aktif edildi.");
 
-	//Servisleri oluştur
+	// Servisler
 	dotnetCli = new DotnetCli();
 	workspaceScanner = new WorkspaceScanner();
 	const cacheService = new CacheService();
 
 	// Status Bar
-	const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-	statusBarItem.tooltip = "PackageHub - Tıklayarak Health Dashboardu aç";
+	const statusBarItem = vscode.window.createStatusBarItem(
+		vscode.StatusBarAlignment.Left,
+		100
+	);
+	statusBarItem.tooltip = "PackageHub – Tıklayarak Health Dashboard’u aç";
 	statusBarItem.show();
 	context.subscriptions.push(statusBarItem);
 
@@ -33,7 +34,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.createTreeView("packageHubExplorer", {
 			treeDataProvider: treeProvider,
-			showCollapseAll: true
+			showCollapseAll: true,
 		})
 	);
 
@@ -47,28 +48,37 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 	context.subscriptions.push(hoverProvider);
 
-	// Package Decoration
+	// Decorations
 	const decorationProvider = new PackageDecorationProvider();
 	context.subscriptions.push({ dispose: () => decorationProvider.dispose() });
 
-	//Komutlar
+	// Editör değiştiğinde dekorasyonları güncelle (sadece bir kere kaydet)
+	context.subscriptions.push(
+		vscode.window.onDidChangeActiveTextEditor(() => {
+			decorationProvider.updateDecorations();
+		})
+	);
 
-	//Hello World
-	const helloCommand = vscode.commands.registerCommand('packageHub.helloWorld', () => {
-		vscode.window.showInformationMessage('Hello World from PackageHub!');
-	});
+	// ======================
+	// Komutlar
+	// ======================
+
+	const helloCommand = vscode.commands.registerCommand(
+		"packageHub.helloWorld",
+		() => {
+			vscode.window.showInformationMessage("Hello World from PackageHub!");
+		}
+	);
 
 	const scanCommand = vscode.commands.registerCommand(
 		"packageHub.scanWorkspace",
 		async () => {
-
 			const workspaceRoot = workspaceScanner.getWorkspaceRoot();
 
 			if (!workspaceRoot) {
 				vscode.window.showErrorMessage(
 					"Açık bir workspace bulunamadı. Lütfen bir klasör açın."
 				);
-
 				return;
 			}
 
@@ -76,7 +86,7 @@ export function activate(context: vscode.ExtensionContext) {
 				{
 					location: vscode.ProgressLocation.Notification,
 					title: "PackageHub",
-					cancellable: false
+					cancellable: false,
 				},
 				async (progress) => {
 					progress.report({ message: "Paketler taranıyor..." });
@@ -84,84 +94,87 @@ export function activate(context: vscode.ExtensionContext) {
 					try {
 						logger.info(`Tarama başlatıldı: ${workspaceRoot}`);
 
-						//Önce solution ara.
+						// Her taramada cache’i temizle (şimdilik stabilite için)
+						cacheService.invalidateAll();
+
+						let vulnerable: any[] = [];
+						let outdated: any[] = [];
+
+						// 1. Solution ara
 						const solutions = await workspaceScanner.findSolutions();
-						let targetPath: string | undefined;
 
 						if (solutions.length > 0) {
-							targetPath = solutions[0].fsPath;
+							const targetPath = solutions[0].fsPath;
 							logger.info(`Solution bulundu: ${targetPath}`);
-						}
-						else {
+
+							vulnerable = await dotnetCli.listVulnerable(targetPath, false);
+							outdated = await dotnetCli.listOutdated(targetPath, false);
+						} else {
+							// 2. Solution yoksa TÜM projeleri tara
 							const projects = await workspaceScanner.findProjects();
 
 							if (projects.length === 0) {
 								vscode.window.showErrorMessage(
 									"Workspace içinde hiç .sln veya .csproj dosyası bulunamadı."
 								);
-
 								return;
 							}
 
-							targetPath = projects[0].fsPath;
-							logger.info(`Project bulundu: ${targetPath}`);
+							logger.info(`${projects.length} proje bulundu, hepsi taranacak...`);
+
+							const allVulnerable: any[] = [];
+							const allOutdated: any[] = [];
+
+							for (const project of projects) {
+								logger.info(`Taranıyor: ${project.fsPath}`);
+								const vul = await dotnetCli.listVulnerable(project.fsPath, false);
+								const out = await dotnetCli.listOutdated(project.fsPath, false);
+
+								allVulnerable.push(...vul);
+								allOutdated.push(...out);
+							}
+
+							// Duplicate temizle (id’ye göre)
+							vulnerable = Array.from(
+								new Map(
+									allVulnerable.map((p) => [p.id.toLowerCase(), p])
+								).values()
+							);
+							outdated = Array.from(
+								new Map(
+									allOutdated.map((p) => [p.id.toLowerCase(), p])
+								).values()
+							);
 						}
 
-						const vulnerableKey = `vulnerable:${targetPath}`;
-						const outdatedKey = `outdated:${targetPath}`;
-
-						let vulnerable = cacheService.get<any[]>(vulnerableKey);
-						let outdated = cacheService.get<any[]>(outdatedKey);
-
-						if (vulnerable && outdated) {
-							logger.info("Sonuçlar cache'ten geldi.");
-						}
-						else {
-							progress.report({ message: "Paketler taranıyor..." });
-
-							vulnerable = await dotnetCli.listVulnerable(targetPath);
-							outdated = await dotnetCli.listOutdated(targetPath);
-
-							cacheService.set(vulnerableKey, vulnerable);
-							cacheService.set(outdatedKey, outdated);
-
-							logger.info("Tarama tamamlandı ve cache'e yazıldı.");
-						}
-
-						//Sonuç mesajı
-						const message = `Tarama tamamlandı -> Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}`;
+						// Sonuç mesajı
+						const message = `Tarama tamamlandı → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}`;
 						vscode.window.showInformationMessage(message);
 						logger.info(message);
 
-						// Status Bar'ı güncelle
+						// Status Bar
 						if (vulnerable.length > 0 || outdated.length > 0) {
-							statusBarItem.text = `$(warning) ${vulnerable.length} vulnarable . ${outdated.length} outdated`;
-							statusBarItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-						}
-						else {
+							statusBarItem.text = `$(warning) ${vulnerable.length} vulnerable · ${outdated.length} outdated`;
+							statusBarItem.backgroundColor = new vscode.ThemeColor(
+								"statusBarItem.warningBackground"
+							);
+						} else {
 							statusBarItem.text = `$(check) Packages healthy`;
 							statusBarItem.backgroundColor = undefined;
 						}
 
-						//Tree View Güncelle
+						// Tree View
 						treeProvider.refresh(vulnerable.length, outdated.length);
 
-						// Set Scan State
+						// Scan State (Hover + Decorations için)
 						ScanState.setResults(vulnerable, outdated);
 
-						// Decoration Set
+						// Decorations
 						decorationProvider.updateDecorations();
 
-						context.subscriptions.push(
-							vscode.window.onDidChangeActiveTextEditor(() => {
-								decorationProvider.updateDecorations();
-							})
-						);
-
-						//Detayları Output penceresine yaz.
+						// Detay log
 						if (vulnerable.length > 0) {
 							logger.info("--- Vulnerable Paketler ---");
-
 							vulnerable.forEach((p: any) => {
 								logger.info(
 									`${p.id} ${p.version} [${p.severity || "unknown"}] (${p.projects.join(", ")})`
@@ -171,7 +184,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 						if (outdated.length > 0) {
 							logger.info("--- Outdated Paketler ---");
-							outdated.forEach((p) => {
+							outdated.forEach((p: any) => {
 								logger.info(
 									`${p.id} ${p.version} → ${p.latestVersion || "?"} (${p.projects.join(", ")})`
 								);
@@ -180,7 +193,9 @@ export function activate(context: vscode.ExtensionContext) {
 					} catch (error: any) {
 						const errorMessage = error.message || String(error);
 						logger.error(`Tarama hatası: ${errorMessage}`);
-						vscode.window.showErrorMessage(`PackageHub tarama hatası: ${errorMessage}`);
+						vscode.window.showErrorMessage(
+							`PackageHub tarama hatası: ${errorMessage}`
+						);
 					}
 				}
 			);
@@ -191,7 +206,9 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.updateVulnerable",
 		async (args?: { packageId: string; version: string }) => {
 			if (!args) {
-				vscode.window.showInformationMessage("Update komutu argümansız çağrıldı.");
+				vscode.window.showInformationMessage(
+					"Update komutu argümansız çağrıldı."
+				);
 				return;
 			}
 			vscode.window.showInformationMessage(
@@ -200,10 +217,14 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
-	context.subscriptions.push(helloCommand, scanCommand, logger, updateCommand);
+	context.subscriptions.push(
+		helloCommand,
+		scanCommand,
+		updateCommand,
+		logger
+	);
 }
 
-// This method is called when your extension is deactivated
 export function deactivate() {
 	logger.info("PackageHub kapatıldı.");
 }
