@@ -7,6 +7,7 @@ import { PackageHubTreeProvider } from "./tree/PackageHubTreeProvider";
 import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
 import { PackageDecorationProvider } from "./providers/PackageDecorationProvider";
+import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
 
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
@@ -26,6 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 	statusBarItem.tooltip = "PackageHub – Tıklayarak Health Dashboard’u aç";
 	statusBarItem.show();
+	statusBarItem.command = "packageHub.showHealthDashboard";
 	context.subscriptions.push(statusBarItem);
 
 	// Tree View
@@ -57,6 +59,14 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.onDidChangeActiveTextEditor(() => {
 			decorationProvider.updateDecorations();
 		})
+	);
+
+	// Health Dashboard
+	const showDashboardCommand = vscode.commands.registerCommand(
+		"packageHub.showHealthDashboard",
+		() => {
+			HealthDashboardPanel.createOrShow();
+		}
 	);
 
 	// ======================
@@ -221,6 +231,7 @@ export function activate(context: vscode.ExtensionContext) {
 		helloCommand,
 		scanCommand,
 		updateCommand,
+		showDashboardCommand,
 		logger
 	);
 }
