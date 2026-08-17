@@ -179,6 +179,9 @@ export function activate(context: vscode.ExtensionContext) {
 						// Scan State (Hover + Decorations için)
 						ScanState.setResults(vulnerable, outdated);
 
+						// Update Dashboard If Open
+						HealthDashboardPanel.refreshIfOpen();
+
 						// Decorations
 						decorationProvider.updateDecorations();
 
