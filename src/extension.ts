@@ -218,14 +218,90 @@ export function activate(context: vscode.ExtensionContext) {
 	const updateCommand = vscode.commands.registerCommand(
 		"packageHub.updateVulnerable",
 		async (args?: { packageId: string; version: string }) => {
-			if (!args) {
-				vscode.window.showInformationMessage(
-					"Update komutu argümansız çağrıldı."
-				);
+			if (!args || !args.packageId) {
+				vscode.window.showWarningMessage("Güncellenecek paket bilgisi eksik.");
 				return;
 			}
-			vscode.window.showInformationMessage(
-				`Update isteniyor → ${args.packageId} → ${args.version} (henüz implement edilmedi)`
+
+			const packageId = args.packageId;
+			const version = args.version;
+
+			const { outdated, vulnerable } = ScanState.findPackage(packageId);
+			const relatedProjectNames =
+				outdated?.projects || vulnerable?.projects || [];
+
+			const allProjects = await workspaceScanner.findProjects();
+
+			const targetProjects = allProjects.filter((p) => {
+				const name = workspaceScanner.getProjectName(p);
+				return relatedProjectNames.includes(name);
+			});
+
+			const projectsToUpdate =
+				targetProjects.length > 0 ? targetProjects : allProjects;
+
+			const confirm = await vscode.window.showWarningMessage(
+				`${packageId} paketini ${version} versiyonuna ${projectsToUpdate.length} projede güncellemek istiyor musun?`,
+				{ modal: true },
+				"Evet, Hepsini Güncelle"
+			);
+
+			if (confirm !== "Evet, Hepsini Güncelle") {
+				return;
+			}
+
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: "PackageHub",
+					cancellable: false,
+				},
+				async (progress) => {
+					try {
+						for (const project of projectsToUpdate) {
+							progress.report({
+								message: `${packageId} güncelleniyor → ${workspaceScanner.getProjectName(project)}`,
+							});
+
+							await dotnetCli.updatePackage(project.fsPath, packageId, version);
+							logger.info(
+								`Güncellendi: ${packageId} → ${version} (${project.fsPath})`
+							);
+						}
+
+						// Restore
+						progress.report({ message: "Restore çalışıyor..." });
+
+						const workspaceRoot = workspaceScanner.getWorkspaceRoot();
+						if (workspaceRoot) {
+							const solutions = await workspaceScanner.findSolutions();
+							const restoreTarget =
+								solutions.length > 0
+									? require("path").dirname(solutions[0].fsPath)
+									: workspaceRoot;
+
+							try {
+								await dotnetCli.restore(restoreTarget);
+								logger.info("Restore tamamlandı.");
+							} catch (restoreError: any) {
+								logger.error(`Restore hatası: ${restoreError.message}`);
+								vscode.window.showWarningMessage(
+									`Paket güncellendi ama restore başarısız: ${restoreError.message}`
+								);
+							}
+						}
+
+						vscode.window.showInformationMessage(
+							`${packageId} → ${version} (${projectsToUpdate.length} proje) güncellendi.`
+						);
+
+						await vscode.commands.executeCommand("packageHub.scanWorkspace");
+					} catch (error: any) {
+						const msg = error.message || String(error);
+						logger.error(`Update hatası: ${msg}`);
+						vscode.window.showErrorMessage(`Güncelleme başarısız: ${msg}`);
+					}
+				}
 			);
 		}
 	);
