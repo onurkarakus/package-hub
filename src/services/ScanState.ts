@@ -3,10 +3,12 @@ import { PackageInfo } from "../models/PackageInfo";
 export class ScanState {
     private static vulnerable: PackageInfo[] = [];
     private static outdated: PackageInfo[] = [];
+    private static scannedAt: Date | undefined;
 
     static setResults(vulnerable: PackageInfo[], outdated: PackageInfo[]) {
         this.vulnerable = vulnerable;
         this.outdated = outdated;
+        this.scannedAt = new Date();
     }
 
     static getVulnerable(): PackageInfo[] {
@@ -15,6 +17,10 @@ export class ScanState {
 
     static getOutDated(): PackageInfo[] {
         return this.outdated;
+    }
+
+    static getScannedAt(): Date | undefined {
+        return this.scannedAt;
     }
 
     static findPackage(packageId: string): {

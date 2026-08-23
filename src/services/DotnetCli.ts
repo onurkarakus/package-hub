@@ -3,6 +3,8 @@ import { promisify } from "util";
 import * as vscode from "vscode";
 import { PackageInfo } from "../models/PackageInfo";
 import { pbkdf2 } from "crypto";
+import * as fs from "fs";
+import * as path from "path";
 
 const execAsync = promisify(exec);
 
@@ -79,8 +81,19 @@ export class DotnetCli {
     /**
    * Restore çalıştırır
    */
-    async restore(workspaceRoot: string): Promise<void> {
-        await this.run("dotnet restore", workspaceRoot);
+    async restore(targetPath: string): Promise<void> {
+        const fs = require("fs");
+        const path = require("path");
+
+        const isFile = fs.existsSync(targetPath) && fs.statSync(targetPath).isFile();
+
+        if (isFile) {
+            const cwd = path.dirname(targetPath);
+            await this.run(`dotnet restore "${targetPath}"`, cwd);
+        }
+        else {
+            await this.run("dotnet restore", targetPath);
+        }
     }
 
     /**

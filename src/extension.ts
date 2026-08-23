@@ -74,13 +74,6 @@ export function activate(context: vscode.ExtensionContext) {
 	// Komutlar
 	// ======================
 
-	const helloCommand = vscode.commands.registerCommand(
-		"packageHub.helloWorld",
-		() => {
-			vscode.window.showInformationMessage("Hello World from PackageHub!");
-		}
-	);
-
 	const scanCommand = vscode.commands.registerCommand(
 		"packageHub.scanWorkspace",
 		async () => {
@@ -378,15 +371,33 @@ export function activate(context: vscode.ExtensionContext) {
 
 					try {
 						const solutions = await workspaceScanner.findSolutions();
-						const restoreTarget =
-							solutions.length > 0
-								? require("path").dirname(solutions[0].fsPath)
-								: workspaceRoot;
 
-						await dotnetCli.restore(restoreTarget);
+						if (solutions.length > 0) {
+							// Solution varsa onu restore et
+							const solutionPath = solutions[0].fsPath;
+							logger.info(`Restore solution: ${solutionPath}`);
+							await dotnetCli.restore(solutionPath);
+						} else {
+							// Solution yoksa tüm projeleri restore et
+							const projects = await workspaceScanner.findProjects();
+							if (projects.length === 0) {
+								vscode.window.showErrorMessage(
+									"Restore edilecek .sln veya .csproj bulunamadı."
+								);
+								return;
+							}
+
+							for (const project of projects) {
+								progress.report({
+									message: `Restore: ${workspaceScanner.getProjectName(project)}`,
+								});
+								logger.info(`Restore project: ${project.fsPath}`);
+								await dotnetCli.restore(project.fsPath);
+							}
+						}
 
 						vscode.window.showInformationMessage("Restore tamamlandı.");
-						logger.info(`Restore tamamlandı: ${restoreTarget}`);
+						logger.info("Restore tamamlandı.");
 
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
 					} catch (error: any) {
@@ -400,7 +411,6 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(
-		helloCommand,
 		scanCommand,
 		updateCommand,
 		showDashboardCommand,

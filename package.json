@@ -27,10 +27,6 @@
   "contributes": {
     "commands": [
       {
-        "command": "packageHub.helloWorld",
-        "title": "PackageHub: Hello World"
-      },
-      {
         "command": "packageHub.scanWorkspace",
         "title": "PackageHub: Scan Workspace"
       },

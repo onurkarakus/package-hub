@@ -84,6 +84,11 @@ export class HealthDashboardPanel {
     const vulnerableCount = vulnerable.length;
     const outdatedCount = outdated.length;
 
+    const scannedAt = ScanState.getScannedAt();
+    const scannedText = scannedAt
+      ? `Last scanned: ${scannedAt.toLocaleString()}`
+      : "Not scanned yet";
+
     const viewMode =
       vscode.workspace
         .getConfiguration("packageHub")
@@ -407,6 +412,9 @@ export class HealthDashboardPanel {
       vscode.postMessage({ command: "setViewMode", mode: mode });
     }
   </script>
+  <footer style="margin-top: 24px; opacity: 0.7; font-size: 0.85rem;">
+    ${scannedText}
+  </footer>
 </body>
 </html>
     `;
