@@ -1,10 +1,6 @@
 import * as vscode from "vscode";
 import { ScanState } from "../services/ScanState";
 
-/**
- * HealthDashboardPanel
- * PackageHub Health Dashboard (Webview)
- */
 export class HealthDashboardPanel {
   public static currentPanel: HealthDashboardPanel | undefined;
   private readonly _panel: vscode.WebviewPanel;
@@ -27,6 +23,18 @@ export class HealthDashboardPanel {
               version: message.version,
             });
             break;
+          case "setViewMode":
+            vscode.workspace
+              .getConfiguration("packageHub")
+              .update(
+                "dashboardViewMode",
+                message.mode,
+                vscode.ConfigurationTarget.Global
+              )
+              .then(() => {
+                this._update();
+              });
+            break;
         }
       },
       null,
@@ -41,14 +49,12 @@ export class HealthDashboardPanel {
       ? vscode.window.activeTextEditor.viewColumn
       : undefined;
 
-    // Zaten açıksa sadece öne getir
     if (HealthDashboardPanel.currentPanel) {
       HealthDashboardPanel.currentPanel._panel.reveal(column);
       HealthDashboardPanel.currentPanel._update();
       return;
     }
 
-    // Yeni panel oluştur
     const panel = vscode.window.createWebviewPanel(
       "packageHubDashboard",
       "PackageHub Dashboard",
@@ -70,19 +76,19 @@ export class HealthDashboardPanel {
 
   private _update() {
     const vulnerable = ScanState.getVulnerable();
-    const outdated = ScanState.getOutDated(); // mevcut ScanState'teki isim
-
-    this._panel.webview.html = this._getHtml(
-      vulnerable,
-      outdated
-    );
+    const outdated = ScanState.getOutDated();
+    this._panel.webview.html = this._getHtml(vulnerable, outdated);
   }
 
   private _getHtml(vulnerable: any[], outdated: any[]): string {
     const vulnerableCount = vulnerable.length;
     const outdatedCount = outdated.length;
 
-    // Tablo satırlarını oluştur
+    const viewMode =
+      vscode.workspace
+        .getConfiguration("packageHub")
+        .get<string>("dashboardViewMode") || "list";
+
     const createRows = (packages: any[], type: "vulnerable" | "outdated") => {
       if (packages.length === 0) {
         return `<tr><td colspan="5" style="opacity:0.6; padding:12px;">No ${type} packages</td></tr>`;
@@ -91,25 +97,164 @@ export class HealthDashboardPanel {
       return packages
         .map((p) => {
           const latest = p.latestVersion || "";
+          const kind = p.kind || type;
           const updateButton = latest
             ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update</button>`
             : "—";
 
           return `
-      <tr>
-        <td><strong>${p.id}</strong></td>
-        <td>${p.version}</td>
-        <td>${latest || "—"}</td>
-        <td>${p.projects?.join(", ") || "—"}</td>
-        <td>${updateButton}</td>
-      </tr>
-    `;
+            <tr>
+              <td>
+                <strong>${p.id}</strong>
+                <span class="badge ${kind === "vulnerable" ? "badge-vuln" : "badge-out"}">
+                  ${kind === "vulnerable" ? "Vulnerable" : "Outdated"}
+                </span>
+              </td>
+              <td>${p.version}</td>
+              <td>${latest || "—"}</td>
+              <td>${p.projects?.join(", ") || "—"}</td>
+              <td>${updateButton}</td>
+            </tr>
+          `;
         })
         .join("");
     };
 
-    const vulnerableRows = createRows(vulnerable, "vulnerable");
-    const outdatedRows = createRows(outdated, "outdated");
+    const allPackages = [
+      ...vulnerable.map((p) => ({ ...p, kind: "vulnerable" })),
+      ...outdated.map((p) => ({ ...p, kind: "outdated" })),
+    ];
+
+    const byProject: Record<string, any[]> = {};
+    for (const p of allPackages) {
+      const projects =
+        p.projects && p.projects.length > 0 ? p.projects : ["Unknown"];
+      for (const proj of projects) {
+        if (!byProject[proj]) {
+          byProject[proj] = [];
+        }
+        byProject[proj].push(p);
+      }
+    }
+
+    const byPackage: Record<string, any> = {};
+    for (const p of allPackages) {
+      const key = p.id.toLowerCase();
+      if (!byPackage[key]) {
+        byPackage[key] = {
+          id: p.id,
+          version: p.version,
+          latestVersion: p.latestVersion,
+          kind: p.kind,
+          projects: [...(p.projects || [])],
+        };
+      } else {
+        for (const proj of p.projects || []) {
+          if (!byPackage[key].projects.includes(proj)) {
+            byPackage[key].projects.push(proj);
+          }
+        }
+      }
+    }
+
+    const listHtml = `
+      <details open>
+        <summary><strong>Vulnerable Packages</strong> (${vulnerableCount})</summary>
+        <table>
+          <thead>
+            <tr>
+              <th>Package</th>
+              <th>Version</th>
+              <th>Latest</th>
+              <th>Projects</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${createRows(
+      vulnerable.map((p) => ({ ...p, kind: "vulnerable" })),
+      "vulnerable"
+    )}</tbody>
+        </table>
+      </details>
+
+      <details open>
+        <summary><strong>Outdated Packages</strong> (${outdatedCount})</summary>
+        <table>
+          <thead>
+            <tr>
+              <th>Package</th>
+              <th>Version</th>
+              <th>Latest</th>
+              <th>Projects</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${createRows(
+      outdated.map((p) => ({ ...p, kind: "outdated" })),
+      "outdated"
+    )}</tbody>
+        </table>
+      </details>
+    `;
+
+    const byProjectHtml = Object.keys(byProject)
+      .sort()
+      .map((projectName) => {
+        const rows = createRows(byProject[projectName], "outdated");
+        return `
+          <details open>
+            <summary><strong>${projectName}</strong> (${byProject[projectName].length})</summary>
+            <table>
+              <thead>
+                <tr>
+                  <th>Package</th>
+                  <th>Version</th>
+                  <th>Latest</th>
+                  <th>Projects</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </details>
+        `;
+      })
+      .join("");
+
+    const byPackageHtml = Object.values(byPackage)
+      .sort((a: any, b: any) => a.id.localeCompare(b.id))
+      .map((p: any) => {
+        const projectList = (p.projects || [])
+          .map((proj: string) => `<li>${proj}</li>`)
+          .join("");
+
+        const latest = p.latestVersion || "";
+        const updateButton = latest
+          ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update</button>`
+          : "";
+
+        return `
+          <details open>
+            <summary>
+              <strong>${p.id}</strong>
+              <span class="badge ${p.kind === "vulnerable" ? "badge-vuln" : "badge-out"}">
+                ${p.kind === "vulnerable" ? "Vulnerable" : "Outdated"}
+              </span>
+              <span style="opacity:0.7"> ${p.version} → ${latest || "—"}</span>
+              ${updateButton}
+            </summary>
+            <ul>${projectList}</ul>
+          </details>
+        `;
+      })
+      .join("");
+
+    const contentHtml =
+      viewMode === "byProject"
+        ? byProjectHtml || "<p>No packages</p>"
+        : viewMode === "byPackage"
+          ? byPackageHtml || "<p>No packages</p>"
+          : listHtml;
 
     return /*html*/ `
 <!DOCTYPE html>
@@ -146,6 +291,8 @@ export class HealthDashboardPanel {
     .vulnerable { color: #f14c4c; }
     .outdated { color: #cca700; }
     .healthy { color: #89d185; }
+    .view-switch { display: flex; gap: 8px; margin-bottom: 16px; }
+    .view-switch .active { outline: 2px solid var(--vscode-focusBorder); }
     .row-btn {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
@@ -158,6 +305,22 @@ export class HealthDashboardPanel {
     .row-btn:hover {
       background: var(--vscode-button-hoverBackground);
     }
+    .badge {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .badge-vuln {
+      background: #f14c4c;
+      color: #fff;
+    }
+    .badge-out {
+      background: #cca700;
+      color: #000;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -169,10 +332,7 @@ export class HealthDashboardPanel {
       padding: 8px 10px;
       border-bottom: 1px solid var(--vscode-widget-border);
     }
-    th {
-      opacity: 0.7;
-      font-weight: 500;
-    }
+    th { opacity: 0.7; font-weight: 500; }
     button {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
@@ -185,6 +345,16 @@ export class HealthDashboardPanel {
     }
     button:hover {
       background: var(--vscode-button-hoverBackground);
+    }
+    details {
+      margin-bottom: 12px;
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 6px;
+      padding: 8px 12px;
+    }
+    summary {
+      cursor: pointer;
+      margin-bottom: 8px;
     }
   </style>
 </head>
@@ -210,56 +380,36 @@ export class HealthDashboardPanel {
 
   <button onclick="refresh()">Refresh Scan</button>
 
-  <h2>Vulnerable Packages</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Package</th>
-        <th>Version</th>
-        <th>Latest</th>
-        <th>Projects</th>
-        <th>Action</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${vulnerableRows}
-    </tbody>
-  </table>
+  <div class="view-switch">
+    <button class="${viewMode === "list" ? "active" : ""}" onclick="setViewMode('list')">Liste</button>
+    <button class="${viewMode === "byProject" ? "active" : ""}" onclick="setViewMode('byProject')">Proje bazlı</button>
+    <button class="${viewMode === "byPackage" ? "active" : ""}" onclick="setViewMode('byPackage')">Paket bazlı</button>
+  </div>
 
-  <h2>Outdated Packages</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Package</th>
-        <th>Version</th>
-        <th>Latest</th>
-        <th>Projects</th>
-        <th>Action</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${outdatedRows}
-    </tbody>
-  </table>
+  ${contentHtml}
 
   <script>
-      const vscode = acquireVsCodeApi();
+    const vscode = acquireVsCodeApi();
 
-      function refresh() {
-        vscode.postMessage({ command: "refresh" });
-      }
+    function refresh() {
+      vscode.postMessage({ command: "refresh" });
+    }
 
-      function updatePackage(packageId, version) {
-        vscode.postMessage({
-          command: "updatePackage",
-          packageId: packageId,
-          version: version
-        });
-      }
-</script>
+    function updatePackage(packageId, version) {
+      vscode.postMessage({
+        command: "updatePackage",
+        packageId: packageId,
+        version: version
+      });
+    }
+
+    function setViewMode(mode) {
+      vscode.postMessage({ command: "setViewMode", mode: mode });
+    }
+  </script>
 </body>
 </html>
-  `;
+    `;
   }
 
   public dispose() {

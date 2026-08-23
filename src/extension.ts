@@ -8,6 +8,7 @@ import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
 import { PackageDecorationProvider } from "./providers/PackageDecorationProvider";
 import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
+import { version } from "node:os";
 
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
@@ -174,7 +175,7 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						// Tree View
-						treeProvider.refresh(vulnerable.length, outdated.length);
+						treeProvider.refresh();
 
 						// Scan State (Hover + Decorations için)
 						ScanState.setResults(vulnerable, outdated);
@@ -306,11 +307,107 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
+	const updateSelectedCommand = vscode.commands.registerCommand(
+		"packageHub.updateSelectedPackage",
+		async (item?: any) => {
+			if (!item?.packageId) {
+				vscode.window.showWarningMessage("Paket Seçilemedi");
+				return;
+			}
+
+			await vscode.commands.executeCommand("packageHub.updateVulnerable", {
+				packageId: item.packageId,
+				version: item.latestVersion
+			});
+		}
+	);
+
+	const showPackageInfoCommand = vscode.commands.registerCommand(
+		"packageHub.showPackageInfo",
+		async (item?: any) => {
+			if (!item?.packageId) {
+				vscode.window.showWarningMessage("Paket seçilemedi.");
+				return;
+			}
+
+			const { vulnerable, outdated } = ScanState.findPackage(item.packageId);
+			const info = vulnerable || outdated;
+
+			const lines = [
+				`Paket: ${item.packageId}`,
+				info?.version ? `Mevcut: ${info.version}` : undefined,
+				info?.latestVersion ? `Son sürüm: ${info.latestVersion}` : undefined,
+				info?.severity ? `Severity: ${info.severity}` : undefined,
+				info?.projects?.length ? `Projeler: ${info.projects.join(", ")}` : undefined,
+			].filter(Boolean);
+
+			vscode.window.showInformationMessage(lines.join(" | "));
+		}
+	);
+
+	const openNugetCommand = vscode.commands.registerCommand(
+		"packageHub.openNugetPage",
+		async (item?: any) => {
+			if (!item?.packageId) {
+				vscode.window.showWarningMessage("Paket seçilemedi.");
+				return;
+			}
+
+			const url = vscode.Uri.parse(`https://www.nuget.org/packages/${item.packageId}`);
+			await vscode.env.openExternal(url);
+		}
+	);
+
+	const restoreAllCommand = vscode.commands.registerCommand(
+		"packageHub.restoreAll",
+		async () => {
+			const workspaceRoot = workspaceScanner.getWorkspaceRoot();
+			if (!workspaceRoot) {
+				vscode.window.showErrorMessage("Açık bir workspace bulunamadı.");
+				return;
+			}
+
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: "PackageHub",
+					cancellable: false,
+				},
+				async (progress) => {
+					progress.report({ message: "Restore çalışıyor..." });
+
+					try {
+						const solutions = await workspaceScanner.findSolutions();
+						const restoreTarget =
+							solutions.length > 0
+								? require("path").dirname(solutions[0].fsPath)
+								: workspaceRoot;
+
+						await dotnetCli.restore(restoreTarget);
+
+						vscode.window.showInformationMessage("Restore tamamlandı.");
+						logger.info(`Restore tamamlandı: ${restoreTarget}`);
+
+						await vscode.commands.executeCommand("packageHub.scanWorkspace");
+					} catch (error: any) {
+						const msg = error.message || String(error);
+						logger.error(`Restore hatası: ${msg}`);
+						vscode.window.showErrorMessage(`Restore başarısız: ${msg}`);
+					}
+				}
+			);
+		}
+	);
+
 	context.subscriptions.push(
 		helloCommand,
 		scanCommand,
 		updateCommand,
 		showDashboardCommand,
+		updateSelectedCommand,
+		showPackageInfoCommand,
+		openNugetCommand,
+		restoreAllCommand,
 		logger
 	);
 }
