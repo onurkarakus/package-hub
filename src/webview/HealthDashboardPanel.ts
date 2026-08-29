@@ -77,12 +77,14 @@ export class HealthDashboardPanel {
   private _update() {
     const vulnerable = ScanState.getVulnerable();
     const outdated = ScanState.getOutDated();
-    this._panel.webview.html = this._getHtml(vulnerable, outdated);
+    const deprecated = ScanState.getDeprecated();
+    this._panel.webview.html = this._getHtml(vulnerable, outdated, deprecated);
   }
 
-  private _getHtml(vulnerable: any[], outdated: any[]): string {
+  private _getHtml(vulnerable: any[], outdated: any[], deprecated: any[]): string {
     const vulnerableCount = vulnerable.length;
     const outdatedCount = outdated.length;
+    const deprecatedCount = deprecated.length;
 
     const scannedAt = ScanState.getScannedAt();
     const scannedText = scannedAt
@@ -94,7 +96,10 @@ export class HealthDashboardPanel {
         .getConfiguration("packageHub")
         .get<string>("dashboardViewMode") || "list";
 
-    const createRows = (packages: any[], type: "vulnerable" | "outdated") => {
+    const createRows = (
+      packages: any[],
+      type: "vulnerable" | "outdated" | "deprecated"
+    ) => {
       if (packages.length === 0) {
         return `<tr><td colspan="5" style="opacity:0.6; padding:12px;">No ${type} packages</td></tr>`;
       }
@@ -103,24 +108,37 @@ export class HealthDashboardPanel {
         .map((p) => {
           const latest = p.latestVersion || "";
           const kind = p.kind || type;
+
+          const badgeClass =
+            kind === "vulnerable"
+              ? "badge-vuln"
+              : kind === "deprecated"
+                ? "badge-dep"
+                : "badge-out";
+
+          const badgeText =
+            kind === "vulnerable"
+              ? "Vulnerable"
+              : kind === "deprecated"
+                ? "Deprecated"
+                : "Outdated";
+
           const updateButton = latest
             ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update</button>`
             : "—";
 
           return `
-            <tr>
-              <td>
-                <strong>${p.id}</strong>
-                <span class="badge ${kind === "vulnerable" ? "badge-vuln" : "badge-out"}">
-                  ${kind === "vulnerable" ? "Vulnerable" : "Outdated"}
-                </span>
-              </td>
-              <td>${p.version}</td>
-              <td>${latest || "—"}</td>
-              <td>${p.projects?.join(", ") || "—"}</td>
-              <td>${updateButton}</td>
-            </tr>
-          `;
+        <tr>
+          <td>
+            <strong>${p.id}</strong>
+            <span class="badge ${badgeClass}">${badgeText}</span>
+          </td>
+          <td>${p.version}</td>
+          <td>${latest || "—"}</td>
+          <td>${p.projects?.join(", ") || "—"}</td>
+          <td>${updateButton}</td>
+        </tr>
+      `;
         })
         .join("");
     };
@@ -128,6 +146,7 @@ export class HealthDashboardPanel {
     const allPackages = [
       ...vulnerable.map((p) => ({ ...p, kind: "vulnerable" })),
       ...outdated.map((p) => ({ ...p, kind: "outdated" })),
+      ...deprecated.map((p) => ({ ...p, kind: "deprecated" })),
     ];
 
     const byProject: Record<string, any[]> = {};
@@ -200,6 +219,24 @@ export class HealthDashboardPanel {
     )}</tbody>
         </table>
       </details>
+      <details open>
+      <summary><strong>Deprecated Packages</strong> (${deprecatedCount})</summary>
+        <table>
+          <thead>
+            <tr>
+              <th>Package</th>
+              <th>Version</th>
+              <th>Latest</th>
+              <th>Projects</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${createRows(
+      deprecated.map((p) => ({ ...p, kind: "deprecated" })),
+      "outdated"
+    )}</tbody>
+        </table>
+      </details>
     `;
 
     const byProjectHtml = Object.keys(byProject)
@@ -242,8 +279,18 @@ export class HealthDashboardPanel {
           <details open>
             <summary>
               <strong>${p.id}</strong>
-              <span class="badge ${p.kind === "vulnerable" ? "badge-vuln" : "badge-out"}">
-                ${p.kind === "vulnerable" ? "Vulnerable" : "Outdated"}
+              <span class="badge ${p.kind === "vulnerable"
+            ? "badge-vuln"
+            : p.kind === "deprecated"
+              ? "badge-dep"
+              : "badge-out"
+          }">
+                ${p.kind === "vulnerable"
+            ? "Vulnerable"
+            : p.kind === "deprecated"
+              ? "Deprecated"
+              : "Outdated"
+          }
               </span>
               <span style="opacity:0.7"> ${p.version} → ${latest || "—"}</span>
               ${updateButton}
@@ -326,6 +373,10 @@ export class HealthDashboardPanel {
       background: #cca700;
       color: #000;
     }
+    .badge-dep {
+       background: #c586c0;
+      color: #fff;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -376,9 +427,13 @@ export class HealthDashboardPanel {
       <div class="card-value outdated">${outdatedCount}</div>
     </div>
     <div class="card">
+      <div class="card-title">Deprecated</div>
+    <div class="card-value" style="color:#c586c0;">${deprecatedCount}</div>
+    </div>
+    <div class="card">
       <div class="card-title">Status</div>
-      <div class="card-value ${vulnerableCount + outdatedCount === 0 ? "healthy" : ""}">
-        ${vulnerableCount + outdatedCount === 0 ? "Healthy" : "Needs Attention"}
+      <div class="card-value ${vulnerableCount + outdatedCount + deprecatedCount === 0 ? "healthy" : ""}">
+        ${vulnerableCount + outdatedCount + deprecatedCount === 0 ? "Healthy" : "Needs Attention"}
       </div>
     </div>
   </div>

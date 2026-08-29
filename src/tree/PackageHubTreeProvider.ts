@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { ScanState } from "../services/ScanState";
+import { deprecate } from "node:util";
 
 export class PackageHubTreeItem extends vscode.TreeItem {
     constructor(
@@ -41,6 +42,7 @@ export class PackageHubTreeProvider
     getChildren(element?: PackageHubTreeItem): Thenable<PackageHubTreeItem[]> {
         const vulnerable = ScanState.getVulnerable();
         const outdated = ScanState.getOutDated();
+        const deprecated = ScanState.getDeprecated();
 
         if (!element) {
             return Promise.resolve([
@@ -54,6 +56,10 @@ export class PackageHubTreeProvider
                 ),
                 new PackageHubTreeItem(
                     "Outdated",
+                    vscode.TreeItemCollapsibleState.Collapsed
+                ),
+                new PackageHubTreeItem(
+                    "Deprecated",
                     vscode.TreeItemCollapsibleState.Collapsed
                 ),
                 new PackageHubTreeItem(
@@ -71,6 +77,10 @@ export class PackageHubTreeProvider
                 ),
                 new PackageHubTreeItem(
                     `🟠 Outdated (${outdated.length})`,
+                    vscode.TreeItemCollapsibleState.None
+                ),
+                new PackageHubTreeItem(
+                    `⚪ Deprecated (${deprecated.length})`,
                     vscode.TreeItemCollapsibleState.None
                 ),
             ]);
@@ -113,6 +123,31 @@ export class PackageHubTreeProvider
                             vscode.TreeItemCollapsibleState.None,
                             undefined,
                             `${p.version} → ${p.latestVersion || "?"}`,
+                            p.id,
+                            p.latestVersion
+                        )
+                )
+            );
+        }
+
+        if (element.label === "Deprecated") {
+            if (deprecated.length === 0) {
+                return Promise.resolve([
+                    new PackageHubTreeItem(
+                        "No deprecated packages",
+                        vscode.TreeItemCollapsibleState.None
+                    )
+                ]);
+            }
+
+            return Promise.resolve(
+                deprecated.map(
+                    (p) =>
+                        new PackageHubTreeItem(
+                            p.id,
+                            vscode.TreeItemCollapsibleState.None,
+                            undefined,
+                            p.version,
                             p.id,
                             p.latestVersion
                         )

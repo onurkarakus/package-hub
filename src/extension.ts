@@ -103,6 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 						let vulnerable: any[] = [];
 						let outdated: any[] = [];
+						let deprecated: any[] = [];
 
 						// 1. Solution ara
 						const solutions = await workspaceScanner.findSolutions();
@@ -113,6 +114,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 							vulnerable = await dotnetCli.listVulnerable(targetPath, false);
 							outdated = await dotnetCli.listOutdated(targetPath, false);
+							deprecated = await dotnetCli.listDeprecated(targetPath);
 						} else {
 							// 2. Solution yoksa TÜM projeleri tara
 							const projects = await workspaceScanner.findProjects();
@@ -128,14 +130,17 @@ export function activate(context: vscode.ExtensionContext) {
 
 							const allVulnerable: any[] = [];
 							const allOutdated: any[] = [];
+							const allDeprecated: any[] = [];
 
 							for (const project of projects) {
 								logger.info(`Taranıyor: ${project.fsPath}`);
 								const vul = await dotnetCli.listVulnerable(project.fsPath, false);
 								const out = await dotnetCli.listOutdated(project.fsPath, false);
+								const dep = await dotnetCli.listDeprecated(project.path);
 
 								allVulnerable.push(...vul);
 								allOutdated.push(...out);
+								allDeprecated.push(...dep);
 							}
 
 							// Duplicate temizle (id’ye göre)
@@ -149,16 +154,22 @@ export function activate(context: vscode.ExtensionContext) {
 									allOutdated.map((p) => [p.id.toLowerCase(), p])
 								).values()
 							);
+
+							deprecated = Array.from(
+								new Map(
+									allDeprecated.map((p) => [p.id.toLocaleLowerCase(), p])
+								).values()
+							);
 						}
 
 						// Sonuç mesajı
-						const message = `Tarama tamamlandı → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}`;
+						const message = `Tarama tamamlandı → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}, Deprecated: ${deprecated.length}`;
 						vscode.window.showInformationMessage(message);
 						logger.info(message);
 
 						// Status Bar
 						if (vulnerable.length > 0 || outdated.length > 0) {
-							statusBarItem.text = `$(warning) ${vulnerable.length} vulnerable · ${outdated.length} outdated`;
+							statusBarItem.text = `$(warning) ${vulnerable.length} vuln · ${outdated.length} outdated · ${deprecated.length} deprecated`;
 							statusBarItem.backgroundColor = new vscode.ThemeColor(
 								"statusBarItem.warningBackground"
 							);
@@ -171,7 +182,7 @@ export function activate(context: vscode.ExtensionContext) {
 						treeProvider.refresh();
 
 						// Scan State (Hover + Decorations için)
-						ScanState.setResults(vulnerable, outdated);
+						ScanState.setResults(vulnerable, outdated, deprecated);
 
 						// Update Dashboard If Open
 						HealthDashboardPanel.refreshIfOpen();
@@ -195,6 +206,13 @@ export function activate(context: vscode.ExtensionContext) {
 								logger.info(
 									`${p.id} ${p.version} → ${p.latestVersion || "?"} (${p.projects.join(", ")})`
 								);
+							});
+						}
+
+						if (deprecated.length > 0) {
+							logger.info("--- Deprecated Paketler ---");
+							deprecated.forEach((p: any) => {
+								logger.info(`${p.id} ${p.version} (${p.projects.join(", ")})`);
 							});
 						}
 					} catch (error: any) {

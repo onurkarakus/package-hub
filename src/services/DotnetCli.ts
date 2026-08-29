@@ -45,9 +45,9 @@ export class DotnetCli {
     ): Promise<PackageInfo[]> {
         const transitiveFlag = includeTransitive ? "--include-transitive" : "";
         const command = `dotnet list ${targetPath} package --vulnerable ${transitiveFlag} --format json`;
-
         const cwd = require("path").dirname(targetPath);
         const output = await this.run(command, cwd);
+
         return this.parsePackageList(output, "vulnerable");
     }
 
@@ -62,18 +62,19 @@ export class DotnetCli {
 
         const transitiveFlag = includeTransitive ? "--include-transitive" : "";
         const command = `dotnet list ${targetPath} package --outdated ${transitiveFlag} --format json`;
-
         const cwd = require("path").dirname(targetPath);
         const output = await this.run(command, cwd);
+
         return this.parsePackageList(output, "outdated");
     }
 
     /**
    * Deprecated paketleri listeler
    */
-    async listDeprecated(workspaceRoot: string): Promise<PackageInfo[]> {
-        const command = `dotnet list package --deprecated --format json`;
-        const output = await this.run(command, workspaceRoot);
+    async listDeprecated(targetPath: string): Promise<PackageInfo[]> {
+        const cwd = require("path").dirname(targetPath);
+        const command = `dotnet list "${targetPath}" package --deprecated --format json`;
+        const output = await this.run(command, cwd);
 
         return this.parsePackageList(output, "deprecated");
     }
