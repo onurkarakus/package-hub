@@ -90,6 +90,11 @@
             ],
             "default": "list",
             "description": "Dashboard paket görünüm modu"
+          },
+          "packageHub.sacanOnStartup": {
+            "type": "boolean",
+            "default": true,
+            "description": "Workspace açılınca otomatik paket taraması yap"
           }
         }
       }

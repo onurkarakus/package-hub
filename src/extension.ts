@@ -438,6 +438,14 @@ export function activate(context: vscode.ExtensionContext) {
 		restoreAllCommand,
 		logger
 	);
+
+	const scanOnStartup = vscode.workspace
+		.getConfiguration("packageHub")
+		.get<boolean>("scanOnStartup, true");
+
+	if (scanOnStartup && workspaceScanner.getWorkspaceRoot()) {
+		vscode.commands.executeCommand("packageHub.scanworkspace");
+	}
 }
 
 export function deactivate() {
