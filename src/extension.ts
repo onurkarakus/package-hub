@@ -63,19 +63,27 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	const projectFileWatcher = vscode.workspace.createFileSystemWatcher(
-		"**/*.{csproj.props}"
+		"**/*.{csproj,props}"
 	);
 
 	const onProjectFileChanged = () => {
 		logger.info("Proje dosyası değişti, dekorasyon yenileniyor.");
 		decorationProvider.updateDecorations();
-	}
+	};
 
 	projectFileWatcher.onDidChange(onProjectFileChanged);
 	projectFileWatcher.onDidCreate(onProjectFileChanged);
 	projectFileWatcher.onDidDelete(onProjectFileChanged);
 
-	context.subscriptions.push(projectFileWatcher);
+	context.subscriptions.push(
+		projectFileWatcher,
+		vscode.workspace.onDidSaveTextDocument((doc) => {
+			if (doc.fileName.endsWith(".csproj") || doc.fileName.endsWith(".props")) {
+				logger.info(`Kaydedildi: ${doc.fileName}`);
+				decorationProvider.updateDecorations();
+			}
+		})
+	);
 
 	// Health Dashboard
 	const showDashboardCommand = vscode.commands.registerCommand(
