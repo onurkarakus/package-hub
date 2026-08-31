@@ -62,6 +62,21 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	const projectFileWatcher = vscode.workspace.createFileSystemWatcher(
+		"**/*.{csproj.props}"
+	);
+
+	const onProjectFileChanged = () => {
+		logger.info("Proje dosyası değişti, dekorasyon yenileniyor.");
+		decorationProvider.updateDecorations();
+	}
+
+	projectFileWatcher.onDidChange(onProjectFileChanged);
+	projectFileWatcher.onDidCreate(onProjectFileChanged);
+	projectFileWatcher.onDidDelete(onProjectFileChanged);
+
+	context.subscriptions.push(projectFileWatcher);
+
 	// Health Dashboard
 	const showDashboardCommand = vscode.commands.registerCommand(
 		"packageHub.showHealthDashboard",
@@ -441,10 +456,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const scanOnStartup = vscode.workspace
 		.getConfiguration("packageHub")
-		.get<boolean>("scanOnStartup, true");
+		.get<boolean>("scanOnStartup", true);
 
 	if (scanOnStartup && workspaceScanner.getWorkspaceRoot()) {
-		vscode.commands.executeCommand("packageHub.scanworkspace");
+		vscode.commands.executeCommand("packageHub.scanWorkspace");
 	}
 }
 
