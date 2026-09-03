@@ -308,6 +308,19 @@ export function activate(context: vscode.ExtensionContext) {
 				.map((p) => workspaceScanner.getProjectName(p))
 				.join(", ");
 
+			if (!version) {
+				const cont = await vscode.window.showWarningMessage(
+					`${packageId} için önerilen yeni sürüm yok.\n\nAynı paket adı ile NuGet'te daha yeni versiyon olmayabilir (ör. xunit → xunit.v3).\nYine de "dotnet add package ${packageId}" çalıştırılsın mı?`,
+					{ modal: true },
+					"Yine de Dene",
+					"İptal"
+				);
+
+				if (cont !== "Yine de Dene") {
+					return;
+				}
+			}
+
 			const confirm = await vscode.window.showWarningMessage(
 				`${packageId} → ${version}\n\nGüncellenecek projeler:\n${projectNames}`,
 				{ modal: true },
