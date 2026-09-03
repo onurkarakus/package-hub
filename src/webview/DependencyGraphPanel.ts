@@ -17,6 +17,7 @@ export class DependencyGraphPanel {
                     vscode.commands.executeCommand("packageHub.updateVulnerable", {
                         packageId: message.packageId,
                         version: message.version,
+                        projectName: message.projectName,
                     });
                 }
             },
@@ -97,7 +98,7 @@ export class DependencyGraphPanel {
                                     : "#cca700";
 
                         return `
-  <div class="pkg" style="border-color:${color}" onclick="selectPackage('${p.id}', '${p.latestVersion || ""}')">
+  <div class="pkg" style="border-color:${color}" onclick="selectPackage('${p.id}', '${p.latestVersion || ""}', '${projectName}')">
     <strong>${p.id}</strong>
     <div class="meta">${p.version} → ${p.latestVersion || "—"}</div>
   </div>
@@ -180,13 +181,14 @@ export class DependencyGraphPanel {
   </div>
   <script>
   const vscode = acquireVsCodeApi();
-  function selectPackage(packageId, version) {
-    vscode.postMessage({
-      command: "selectPackage",
-      packageId: packageId,
-      version: version
-    });
-  }
+    function selectPackage(packageId, version, projectName) {
+        vscode.postMessage({
+        command: "selectPackage",
+        packageId: packageId,
+        version: version,
+        projectName: projectName
+  });
+}
 </script>
 </body>
 </html>`;

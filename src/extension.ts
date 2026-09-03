@@ -271,7 +271,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const updateCommand = vscode.commands.registerCommand(
 		"packageHub.updateVulnerable",
-		async (args?: { packageId: string; version: string }) => {
+		async (args?: { packageId: string; version: string; projectName?: string }) => {
 			if (!args || !args.packageId) {
 				vscode.window.showWarningMessage("Güncellenecek paket bilgisi eksik.");
 				return;
@@ -302,7 +302,13 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const projectsToUpdate = targetProjects;
+			let projectsToUpdate = targetProjects;
+
+			if (args.projectName) {
+				projectsToUpdate = targetProjects.filter(
+					(p) => workspaceScanner.getProjectName(p) === args.projectName
+				);
+			}
 
 			const projectNames = projectsToUpdate
 				.map((p) => workspaceScanner.getProjectName(p))
