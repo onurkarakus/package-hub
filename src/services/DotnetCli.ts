@@ -22,16 +22,27 @@ export class DotnetCli {
                 maxBuffer: 10 * 1024 * 1024,
             });
 
+            if (stdout && stdout.trim()) {
+                return stdout.trim();
+            }
+
             if (stderr && !stdout) {
                 throw new Error(stderr);
             }
 
-            return stdout.trim();
+            return "";
         } catch (error: any) {
             if (error.code === "ENOENT") {
-                throw new Error("`dotnet`komutu bulunamadı. .NET SDK'nın yüklü olduğundan emin ol.");
-            };
-            throw new Error(`Dotnet komutu başarısız : ${error.message}`);
+                throw new Error("`dotnet` komutu bulunamadı. .NET SDK yüklü mü?");
+            }
+
+            // Exit code != 0 olsa bile JSON gelmişse kullan
+            if (error.stdout && String(error.stdout).trim()) {
+                return String(error.stdout).trim();
+            }
+
+            const detail = error.stderr || error.message || String(error);
+            throw new Error(`Dotnet komutu başarısız : ${detail}`);
         }
     }
 
@@ -44,7 +55,7 @@ export class DotnetCli {
         includeTransitive: boolean = true
     ): Promise<PackageInfo[]> {
         const transitiveFlag = includeTransitive ? "--include-transitive" : "";
-        const command = `dotnet list ${targetPath} package --vulnerable ${transitiveFlag} --format json`;
+        const command = `dotnet list "${targetPath}" package --vulnerable ${transitiveFlag} --format json`;
         const cwd = require("path").dirname(targetPath);
         const output = await this.run(command, cwd);
 
@@ -61,7 +72,7 @@ export class DotnetCli {
     ): Promise<PackageInfo[]> {
 
         const transitiveFlag = includeTransitive ? "--include-transitive" : "";
-        const command = `dotnet list ${targetPath} package --outdated ${transitiveFlag} --format json`;
+        const command = `dotnet list "${targetPath}" package --outdated ${transitiveFlag} --format json`;
         const cwd = require("path").dirname(targetPath);
         const output = await this.run(command, cwd);
 

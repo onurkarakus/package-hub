@@ -189,13 +189,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 							for (const project of projects) {
 								logger.info(`Taranıyor: ${project.fsPath}`);
-								const vul = await dotnetCli.listVulnerable(project.fsPath, false);
-								const out = await dotnetCli.listOutdated(project.fsPath, false);
-								const dep = await dotnetCli.listDeprecated(project.path);
 
-								allVulnerable.push(...vul);
-								allOutdated.push(...out);
-								allDeprecated.push(...dep);
+								try {
+									const vul = await dotnetCli.listVulnerable(project.fsPath, false);
+									const out = await dotnetCli.listOutdated(project.fsPath, false);
+									const dep = await dotnetCli.listDeprecated(project.fsPath);
+
+									allVulnerable.push(...vul);
+									allOutdated.push(...out);
+									allDeprecated.push(...dep);
+								} catch (projectError: any) {
+									logger.error(`Proje taranamadı (${project.fsPath}): ${projectError.message}`);
+								}
 							}
 
 							vulnerable = mergeById(allVulnerable);
