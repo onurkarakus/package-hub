@@ -98,6 +98,35 @@ export function activate(context: vscode.ExtensionContext) {
 	// Komutlar
 	// ======================
 
+	function mergeById(packages: any[]): any[] {
+		const map = new Map<string, any>();
+
+		for (const p of packages) {
+			const key = p.id.toLowerCase();
+			const existing = map.get(key);
+
+			if (!existing) {
+				map.set(key, {
+					...p,
+					projects: [...(p.projects || [])],
+				});
+				continue;
+			}
+
+			for (const proj of p.projects || []) {
+				if (!existing.projects.includes(proj)) {
+					existing.projects.push(proj);
+				}
+			}
+
+			if (p.latestVersion && !existing.latestVersion) {
+				existing.latestVersion = p.latestVersion;
+			}
+		}
+
+		return Array.from(map.values());
+	}
+
 	const scanCommand = vscode.commands.registerCommand(
 		"packageHub.scanWorkspace",
 		async () => {
@@ -167,23 +196,9 @@ export function activate(context: vscode.ExtensionContext) {
 								allDeprecated.push(...dep);
 							}
 
-							// Duplicate temizle (id’ye göre)
-							vulnerable = Array.from(
-								new Map(
-									allVulnerable.map((p) => [p.id.toLowerCase(), p])
-								).values()
-							);
-							outdated = Array.from(
-								new Map(
-									allOutdated.map((p) => [p.id.toLowerCase(), p])
-								).values()
-							);
-
-							deprecated = Array.from(
-								new Map(
-									allDeprecated.map((p) => [p.id.toLocaleLowerCase(), p])
-								).values()
-							);
+							vulnerable = mergeById(allVulnerable);
+							outdated = mergeById(allOutdated);
+							deprecated = mergeById(allDeprecated);
 						}
 
 						// Sonuç mesajı
@@ -265,9 +280,12 @@ export function activate(context: vscode.ExtensionContext) {
 			const packageId = args.packageId;
 			const version = args.version;
 
-			const { outdated, vulnerable } = ScanState.findPackage(packageId);
+			const { outdated, vulnerable, deprecated } = ScanState.findPackage(packageId);
 			const relatedProjectNames =
-				outdated?.projects || vulnerable?.projects || [];
+				outdated?.projects ||
+				vulnerable?.projects ||
+				deprecated?.projects ||
+				[];
 
 			const allProjects = await workspaceScanner.findProjects();
 
@@ -276,16 +294,27 @@ export function activate(context: vscode.ExtensionContext) {
 				return relatedProjectNames.includes(name);
 			});
 
-			const projectsToUpdate =
-				targetProjects.length > 0 ? targetProjects : allProjects;
+			if (targetProjects.length === 0) {
+				vscode.window.showErrorMessage(
+					`${packageId} paketinin bulunduğu proje eşleştirilemedi. Tüm projelere eklenmedi.`
+				);
+				logger.error(`Update iptal: proje eşleşmedi → ${packageId}`);
+				return;
+			}
+
+			const projectsToUpdate = targetProjects;
+
+			const projectNames = projectsToUpdate
+				.map((p) => workspaceScanner.getProjectName(p))
+				.join(", ");
 
 			const confirm = await vscode.window.showWarningMessage(
-				`${packageId} paketini ${version} versiyonuna ${projectsToUpdate.length} projede güncellemek istiyor musun?`,
+				`${packageId} → ${version}\n\nGüncellenecek projeler:\n${projectNames}`,
 				{ modal: true },
-				"Evet, Hepsini Güncelle"
+				"Evet, Güncelle"
 			);
 
-			if (confirm !== "Evet, Hepsini Güncelle") {
+			if (confirm !== "Evet, Güncelle") {
 				return;
 			}
 
@@ -368,8 +397,8 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const { vulnerable, outdated } = ScanState.findPackage(item.packageId);
-			const info = vulnerable || outdated;
+			const { vulnerable, outdated, deprecated } = ScanState.findPackage(item.packageId);
+			const info = vulnerable || outdated || deprecated;
 
 			const lines = [
 				`Paket: ${item.packageId}`,

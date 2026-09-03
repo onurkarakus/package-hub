@@ -31,7 +31,7 @@ export class WorkspaceScanner {
    */
     async findSolutions(): Promise<vscode.Uri[]> {
         return vscode.workspace.findFiles(
-            "**/*.{sln}",
+            "**/*.{sln,slnx}",
             "**/{node_modules,bin,obj,.git}/**"
         );
     }

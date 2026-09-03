@@ -123,9 +123,7 @@ export class HealthDashboardPanel {
                 ? "Deprecated"
                 : "Outdated";
 
-          const updateButton = latest
-            ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update</button>`
-            : "—";
+          const updateButton = `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update</button>`;
 
           return `
         <tr>
