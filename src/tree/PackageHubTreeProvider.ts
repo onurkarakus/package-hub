@@ -169,6 +169,10 @@ export class PackageHubTreeProvider
                     command: "packageHub.restoreAll",
                     title: "Restore All",
                 }),
+                new PackageHubTreeItem("Open Graph", vscode.TreeItemCollapsibleState.None, {
+                    command: "packageHub.showDependencyGraph",
+                    title: "Open Graph",
+                }),
             ]);
         }
 

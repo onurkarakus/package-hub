@@ -9,6 +9,7 @@ import { ScanState } from "./services/ScanState";
 import { PackageDecorationProvider } from "./providers/PackageDecorationProvider";
 import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
 import { version } from "node:os";
+import { DependencyGraphPanel } from "./webview/DependencyGraphPanel";
 
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
@@ -212,6 +213,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 						// Decorations
 						decorationProvider.updateDecorations();
+
+						//Graph
+						DependencyGraphPanel.refreshIfOpen();
 
 						// Detay log
 						if (vulnerable.length > 0) {
@@ -451,6 +455,13 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
+	const showGraphCommand = vscode.commands.registerCommand(
+		"packageHub.showDependencyGraph",
+		() => {
+			DependencyGraphPanel.createOrShow();
+		}
+	);
+
 	context.subscriptions.push(
 		scanCommand,
 		updateCommand,
@@ -459,6 +470,7 @@ export function activate(context: vscode.ExtensionContext) {
 		showPackageInfoCommand,
 		openNugetCommand,
 		restoreAllCommand,
+		showGraphCommand,
 		logger
 	);
 

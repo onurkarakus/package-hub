@@ -57,6 +57,10 @@
       {
         "command": "packageHub.openNugetPage",
         "title": "PackageHub: Open on NuGet"
+      },
+      {
+        "command": "packageHub.showDependencyGraph",
+        "title": "PackageHub: Show Dependency Graph"
       }
     ],
     "viewsContainers": {
