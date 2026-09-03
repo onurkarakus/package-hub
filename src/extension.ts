@@ -159,7 +159,9 @@ export function activate(context: vscode.ExtensionContext) {
 						let deprecated: any[] = [];
 
 						// 1. Solution ara
-						const solutions = await workspaceScanner.findSolutions();
+						const solutions = (await workspaceScanner.findSolutions()).filter((s) =>
+							s.fsPath.toLowerCase().endsWith(".sln")
+						);
 
 						if (solutions.length > 0) {
 							const targetPath = solutions[0].fsPath;
@@ -360,7 +362,9 @@ export function activate(context: vscode.ExtensionContext) {
 						progress.report({ message: "Restore çalışıyor..." });
 
 						try {
-							const solutions = await workspaceScanner.findSolutions();
+							const solutions = (await workspaceScanner.findSolutions()).filter((s) =>
+								s.fsPath.toLowerCase().endsWith(".sln")
+							);
 
 							if (solutions.length > 0) {
 								logger.info(`Restore solution: ${solutions[0].fsPath}`);
@@ -465,7 +469,9 @@ export function activate(context: vscode.ExtensionContext) {
 					progress.report({ message: "Restore çalışıyor..." });
 
 					try {
-						const solutions = await workspaceScanner.findSolutions();
+						const solutions = (await workspaceScanner.findSolutions()).filter((s) =>
+							s.fsPath.toLowerCase().endsWith(".sln")
+						);
 
 						if (solutions.length > 0) {
 							// Solution varsa onu restore et
