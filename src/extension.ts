@@ -340,23 +340,25 @@ export function activate(context: vscode.ExtensionContext) {
 						// Restore
 						progress.report({ message: "Restore çalışıyor..." });
 
-						const workspaceRoot = workspaceScanner.getWorkspaceRoot();
-						if (workspaceRoot) {
+						try {
 							const solutions = await workspaceScanner.findSolutions();
-							const restoreTarget =
-								solutions.length > 0
-									? require("path").dirname(solutions[0].fsPath)
-									: workspaceRoot;
 
-							try {
-								await dotnetCli.restore(restoreTarget);
-								logger.info("Restore tamamlandı.");
-							} catch (restoreError: any) {
-								logger.error(`Restore hatası: ${restoreError.message}`);
-								vscode.window.showWarningMessage(
-									`Paket güncellendi ama restore başarısız: ${restoreError.message}`
-								);
+							if (solutions.length > 0) {
+								logger.info(`Restore solution: ${solutions[0].fsPath}`);
+								await dotnetCli.restore(solutions[0].fsPath);
+							} else {
+								for (const project of projectsToUpdate) {
+									logger.info(`Restore project: ${project.fsPath}`);
+									await dotnetCli.restore(project.fsPath);
+								}
 							}
+
+							logger.info("Restore tamamlandı.");
+						} catch (restoreError: any) {
+							logger.error(`Restore hatası: ${restoreError.message}`);
+							vscode.window.showWarningMessage(
+								`Paket güncellendi ama restore başarısız: ${restoreError.message}`
+							);
 						}
 
 						vscode.window.showInformationMessage(
