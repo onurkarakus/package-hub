@@ -106,9 +106,17 @@ export function activate(context: vscode.ExtensionContext) {
 			const existing = map.get(key);
 
 			if (!existing) {
+
+				const versionByProject: Record<string, string> = {};
+
+				for (const proj of p.projects || []) {
+					versionByProject[proj] = p.version;
+				}
+
 				map.set(key, {
 					...p,
 					projects: [...(p.projects || [])],
+					versionByProject,
 				});
 				continue;
 			}
@@ -117,6 +125,11 @@ export function activate(context: vscode.ExtensionContext) {
 				if (!existing.projects.includes(proj)) {
 					existing.projects.push(proj);
 				}
+
+				if (!existing.versionByProject) {
+					existing.versionByProject = {};
+				}
+				existing.versionByProject[proj] = p.version;
 			}
 
 			if (p.latestVersion && !existing.latestVersion) {
@@ -229,6 +242,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 						// Scan State (Hover + Decorations için)
 						ScanState.setResults(vulnerable, outdated, deprecated);
+
+						//Cpm
+						const cpmFiles = await workspaceScanner.findCentralPackageManagementFiles();
+						ScanState.setCpm(cpmFiles.length > 0);
+						logger.info(`CPM: ${cpmFiles.length > 0 ? "var" : "yok"}`);
 
 						// Update Dashboard If Open
 						HealthDashboardPanel.refreshIfOpen();

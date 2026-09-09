@@ -82,9 +82,15 @@ export class HealthDashboardPanel {
   }
 
   private _getHtml(vulnerable: any[], outdated: any[], deprecated: any[]): string {
+
+    const conflicts = ScanState.getVersionConflicts();
+    const conflictCount = conflicts.length;
+
     const vulnerableCount = vulnerable.length;
     const outdatedCount = outdated.length;
     const deprecatedCount = deprecated.length;
+
+    const hasCpm = ScanState.getCpm();
 
     const scannedAt = ScanState.getScannedAt();
     const scannedText = scannedAt
@@ -179,6 +185,36 @@ export class HealthDashboardPanel {
       }
     }
 
+    const conflictHtml =
+      conflictCount === 0
+        ? `<p style="opacity:0.6;">No version conflicts</p>`
+        : conflicts
+          .map((c) => {
+            const rows = c.versions
+              .map(
+                (v) => `
+            <tr>
+              <td>${v.version}</td>
+              <td>${v.projects.join(", ")}</td>
+            </tr>
+          `
+              )
+              .join("");
+
+            return `
+          <details open>
+            <summary><strong>${c.id}</strong> (${c.versions.length} farklı versiyon)</summary>
+            <table>
+              <thead>
+                <tr><th>Version</th><th>Projects</th></tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </details>
+        `;
+          })
+          .join("");
+
     const listHtml = `
       <details open>
         <summary><strong>Vulnerable Packages</strong> (${vulnerableCount})</summary>
@@ -234,6 +270,10 @@ export class HealthDashboardPanel {
       "outdated"
     )}</tbody>
         </table>
+      </details>
+      <details open>
+      <summary><strong>Version Conflicts</strong> (${conflictCount})</summary>
+        ${conflictHtml}
       </details>
     `;
 
@@ -432,6 +472,16 @@ export class HealthDashboardPanel {
       <div class="card-title">Status</div>
       <div class="card-value ${vulnerableCount + outdatedCount + deprecatedCount === 0 ? "healthy" : ""}">
         ${vulnerableCount + outdatedCount + deprecatedCount === 0 ? "Healthy" : "Needs Attention"}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Conflicts</div>
+      <div class="card-value" style="color:#4fc1ff;">${conflictCount}</div>
+    </div>
+    <div class="card">
+      <div class="card-title">CPM</div>
+      <div class="card-value ${hasCpm ? "healthy" : ""}">
+        ${hasCpm ? "Enabled" : "Not used"}
       </div>
     </div>
   </div>

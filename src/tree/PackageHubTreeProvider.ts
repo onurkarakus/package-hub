@@ -43,6 +43,7 @@ export class PackageHubTreeProvider
         const vulnerable = ScanState.getVulnerable();
         const outdated = ScanState.getOutDated();
         const deprecated = ScanState.getDeprecated();
+        const conflicts = ScanState.getVersionConflicts();
 
         if (!element) {
             return Promise.resolve([
@@ -60,6 +61,10 @@ export class PackageHubTreeProvider
                 ),
                 new PackageHubTreeItem(
                     "Deprecated",
+                    vscode.TreeItemCollapsibleState.Collapsed
+                ),
+                new PackageHubTreeItem(
+                    "Conflicts",
                     vscode.TreeItemCollapsibleState.Collapsed
                 ),
                 new PackageHubTreeItem(
@@ -81,6 +86,10 @@ export class PackageHubTreeProvider
                 ),
                 new PackageHubTreeItem(
                     `⚪ Deprecated (${deprecated.length})`,
+                    vscode.TreeItemCollapsibleState.None
+                ),
+                new PackageHubTreeItem(
+                    `🔵 Conflicts (${conflicts.length})`,
                     vscode.TreeItemCollapsibleState.None
                 ),
             ]);
@@ -150,6 +159,29 @@ export class PackageHubTreeProvider
                             p.version,
                             p.id,
                             p.latestVersion
+                        )
+                )
+            );
+        }
+
+        if (element.label === "Conflicts") {
+            if (conflicts.length === 0) {
+                return Promise.resolve([
+                    new PackageHubTreeItem(
+                        "No version conflicts",
+                        vscode.TreeItemCollapsibleState.None
+                    ),
+                ]);
+            }
+
+            return Promise.resolve(
+                conflicts.map(
+                    (c) =>
+                        new PackageHubTreeItem(
+                            c.id,
+                            vscode.TreeItemCollapsibleState.None,
+                            undefined,
+                            c.versions.map((v) => v.version).join(" / ")
                         )
                 )
             );

@@ -5,6 +5,15 @@ export class ScanState {
     private static outdated: PackageInfo[] = [];
     private static deprecated: PackageInfo[] = [];
     private static scannedAt: Date | undefined;
+    private static hasCpm = false;
+
+    static setCpm(hasCpm: boolean) {
+        this.hasCpm = hasCpm;
+    }
+
+    static getCpm(): boolean {
+        return this.hasCpm;
+    }
 
     static setResults(
         vulnerable: PackageInfo[],
@@ -43,5 +52,53 @@ export class ScanState {
             outdated: this.outdated.find((p) => p.id.toLowerCase() === id),
             deprecated: this.deprecated.find((p) => p.id.toLowerCase() === id),
         };
+    }
+
+    static getVersionConflicts(): {
+        id: string;
+        versions: { version: string; projects: string[] }[];
+    }[] {
+        const all = [...this.vulnerable, ...this.outdated, ...this.deprecated];
+        const byId = new Map<string, Map<string, string[]>>();
+
+        for (const p of all as any[]) {
+            const key = p.id.toLowerCase();
+            if (!byId.has(key)) {
+                byId.set(key, new Map());
+            }
+
+            const versions = byId.get(key)!;
+            const versionByProject: Record<string, string> = p.versionByProject || {};
+
+            const entries =
+                Object.keys(versionByProject).length > 0
+                    ? Object.entries(versionByProject)
+                    : (p.projects || []).map((proj: string) => [proj, p.version]);
+
+            for (const [proj, version] of entries) {
+                if (!versions.has(version)) {
+                    versions.set(version, []);
+                }
+                if (!versions.get(version)!.includes(proj)) {
+                    versions.get(version)!.push(proj);
+                }
+            }
+        }
+
+        const conflicts = [];
+
+        for (const [id, versions] of byId) {
+            if (versions.size > 1) {
+                conflicts.push({
+                    id,
+                    versions: Array.from(versions.entries()).map(([version, projects]) => ({
+                        version,
+                        projects,
+                    })),
+                });
+            }
+        }
+
+        return conflicts;
     }
 }
