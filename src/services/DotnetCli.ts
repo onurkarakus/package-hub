@@ -165,7 +165,9 @@ export class DotnetCli {
                         const version =
                             pkg.requestedVersion || pkg.resolvedVersion || pkg.version;
 
-                        if (!id || !version) continue;
+                        if (!id || !version) {
+                            continue;
+                        }
 
                         // Vulnerability bilgisini çıkar
                         let severity: "Critical" | "High" | "Moderate" | "Low" | undefined;

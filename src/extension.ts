@@ -8,7 +8,6 @@ import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
 import { PackageDecorationProvider } from "./providers/PackageDecorationProvider";
 import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
-import { version } from "node:os";
 import { DependencyGraphPanel } from "./webview/DependencyGraphPanel";
 
 let dotnetCli: DotnetCli;
@@ -34,7 +33,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Tree View
 	const treeProvider = new PackageHubTreeProvider();
-	vscode.window.registerTreeDataProvider("packageHubExplorer", treeProvider);
 	context.subscriptions.push(
 		vscode.window.createTreeView("packageHubExplorer", {
 			treeDataProvider: treeProvider,
@@ -626,7 +624,9 @@ export function activate(context: vscode.ExtensionContext) {
 		.get<boolean>("scanOnStartup", true);
 
 	if (scanOnStartup && workspaceScanner.getWorkspaceRoot()) {
-		vscode.commands.executeCommand("packageHub.scanWorkspace");
+		setTimeout(() => {
+			vscode.commands.executeCommand("packageHub.scanWorkspace");
+		}, 2000);
 	}
 }
 

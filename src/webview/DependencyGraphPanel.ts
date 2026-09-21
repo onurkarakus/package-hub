@@ -199,7 +199,7 @@ export class DependencyGraphPanel {
         this._panel.dispose();
         while (this._disposables.length) {
             const d = this._disposables.pop();
-            if (d) d.dispose();
+            if (d) { d.dispose(); }
         }
     }
 }

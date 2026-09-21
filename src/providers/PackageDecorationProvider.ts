@@ -66,7 +66,9 @@ export class PackageDecorationProvider {
             const line = lines[i];
             const match = line.match(/PackageReference\s+Include="([^"]+)"(?:\s+Version="([^"]+)")?/i);
 
-            if (!match) { continue };
+            if (!match) {
+                continue;
+            }
 
             const packageId = match[1];
             const { vulnerable, outdated, deprecated } = ScanState.findPackage(packageId);
