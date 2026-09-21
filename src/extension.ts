@@ -43,8 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Hover
 	const hoverProvider = vscode.languages.registerHoverProvider(
 		[
-			{ language: "xml", pattern: "**/*.{csproj,props}" },
-			{ language: "xml", scheme: "file" },
+			{ language: "xml", scheme: "file", pattern: "**/*.{csproj,props}" }
 		],
 		new PackageHoverProvider()
 	);
@@ -227,6 +226,7 @@ export function activate(context: vscode.ExtensionContext) {
 					progress.report({ message: "Paketler taranıyor..." });
 
 					try {
+						logger.show(true);
 						logger.info(`Tarama başlatıldı: ${workspaceRoot}`);
 
 						// Her taramada cache’i temizle (şimdilik stabilite için)

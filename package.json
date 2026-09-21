@@ -20,6 +20,7 @@
     "dependencies"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onLanguage:csharp",
     "workspaceContains:**/*.{csproj,sln,props}"
   ],
