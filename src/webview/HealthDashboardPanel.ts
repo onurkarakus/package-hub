@@ -190,6 +190,17 @@ export class HealthDashboardPanel {
         ? `<p style="opacity:0.6;">No version conflicts</p>`
         : conflicts
           .map((c) => {
+
+            const pkg = ScanState.getOutDated().find((p) => p.id.toLowerCase() === c.id.toLowerCase()) ||
+              ScanState.getDeprecated().find((p) => p.id.toLowerCase() === c.id.toLowerCase()) ||
+              ScanState.getVulnerable().find((p) => p.id.toLowerCase() === c.id.toLowerCase());
+
+            const latest = pkg?.latestVersion || "";
+
+            const alignBtn = latest
+              ? `<button class="row-btn" onclick="updatePackage('${pkg!.id}', '${latest}')">Align to ${latest}</button>`
+              : "";
+
             const rows = c.versions
               .map(
                 (v) => `
@@ -203,15 +214,17 @@ export class HealthDashboardPanel {
 
             return `
           <details open>
-            <summary><strong>${c.id}</strong> (${c.versions.length} farklı versiyon)</summary>
-            <table>
-              <thead>
-                <tr><th>Version</th><th>Projects</th></tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </details>
-        `;
+            <summary>
+              <strong>${c.id}</strong> (${c.versions.length} farklı versiyon)
+                ${alignBtn}
+              </summary>
+              <table>
+                <thead>
+                  <tr><th>Version</th><th>Projects</th></tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+          </details>`;
           })
           .join("");
 

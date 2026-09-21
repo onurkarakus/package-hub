@@ -140,6 +140,73 @@ export function activate(context: vscode.ExtensionContext) {
 		return Array.from(map.values());
 	}
 
+	const explainCommand = vscode.commands.registerCommand(
+		"packageHub.explainSelectedPackage",
+		async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) {
+				vscode.window.showWarningMessage("Açık bir editör yok.");
+				return;
+			}
+
+			const line = editor.document.lineAt(editor.selection.active.line).text;
+			const match = line.match(/PackageReference\s+Include="([^"]+)"/i);
+
+			if (!match) {
+				vscode.window.showWarningMessage(
+					"Bu satırda PackageReference bulunamadı."
+				);
+				return;
+			}
+
+			const packageId = match[1];
+			const { vulnerable, outdated, deprecated } = ScanState.findPackage(packageId);
+			const info = vulnerable || outdated || deprecated;
+
+			if (!info) {
+				vscode.window.showInformationMessage(
+					`${packageId} sağlıklı görünüyor (veya henüz scan yapılmadı).`
+				);
+				return;
+			}
+
+			const lines = [
+				`${packageId}`,
+				info.version ? `Mevcut: ${info.version}` : undefined,
+				info.latestVersion ? `Önerilen: ${info.latestVersion}` : undefined,
+				info.severity ? `Severity: ${info.severity}` : undefined,
+				vulnerable ? "Durum: Vulnerable" : undefined,
+				!vulnerable && deprecated ? "Durum: Deprecated" : undefined,
+				!vulnerable && !deprecated && outdated ? "Durum: Outdated" : undefined,
+				info.projects?.length ? `Projeler: ${info.projects.join(", ")}` : undefined,
+			].filter(Boolean);
+
+			const buttons: string[] = [];
+			if (info.advisoryUrl) {
+				buttons.push("Open Advisory");
+			}
+			if (info.latestVersion) {
+				buttons.push("Update");
+			}
+
+			const action = await vscode.window.showInformationMessage(
+				lines.join(" | "),
+				...buttons
+			);
+
+			if (action === "Open Advisory" && info.advisoryUrl) {
+				await vscode.env.openExternal(vscode.Uri.parse(info.advisoryUrl));
+			}
+
+			if (action === "Update") {
+				await vscode.commands.executeCommand("packageHub.updateVulnerable", {
+					packageId: info.id,
+					version: info.latestVersion,
+				});
+			}
+		}
+	);
+
 	const scanCommand = vscode.commands.registerCommand(
 		"packageHub.scanWorkspace",
 		async () => {
@@ -550,7 +617,8 @@ export function activate(context: vscode.ExtensionContext) {
 		openNugetCommand,
 		restoreAllCommand,
 		showGraphCommand,
-		logger
+		logger,
+		explainCommand
 	);
 
 	const scanOnStartup = vscode.workspace
