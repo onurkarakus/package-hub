@@ -81,6 +81,14 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         md.appendMarkdown(`\n\n---\n`);
         md.appendMarkdown(`[Scan Workspace](command:packageHub.scanWorkspace)`);
 
+        md.isTrusted = true;
+
+        md.appendMarkdown(
+            `\n\n[Ignore](command:packageHub.ignorePackage?${encodeURIComponent(
+                JSON.stringify(packageId)
+            )})`
+        );
+
         return new vscode.Hover(md);
     }
 }

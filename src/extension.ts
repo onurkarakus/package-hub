@@ -137,6 +137,29 @@ export function activate(context: vscode.ExtensionContext) {
 		return Array.from(map.values());
 	}
 
+	const ignorePackageCommand = vscode.commands.registerCommand(
+		"packageHub.ignorePackage",
+		async (packageId?: string) => {
+			if (!packageId) {
+				vscode.window.showWarningMessage("Ignore edilecek paket belirtilmedi.");
+				return;
+			}
+
+			const config = vscode.workspace.getConfiguration("packageHub");
+			const current = config.get<string[]>("ignoredPackages", []);
+
+			if (current.some((id) => id.toLowerCase() === packageId.toLowerCase())) {
+				vscode.window.showInformationMessage(`${packageId} zaten ignore listesinde.`);
+				return;
+			}
+
+			await config.update("ignoredPackages", [...current, packageId], vscode.ConfigurationTarget.Workspace);
+
+			vscode.window.showInformationMessage(`${packageId} ignore listesine eklendi.`);
+			await vscode.commands.executeCommand("packageHub.scanWorkspace");
+		}
+	);
+
 	const explainCommand = vscode.commands.registerCommand(
 		"packageHub.explainSelectedPackage",
 		async () => {
@@ -306,6 +329,17 @@ export function activate(context: vscode.ExtensionContext) {
 						treeProvider.refresh();
 
 						// Scan State (Hover + Decorations için)
+
+						const ignored = (
+							vscode.workspace
+								.getConfiguration("packageHub")
+								.get<string[]>("ignoredPackages") || []
+						).map((id) => id.toLowerCase());
+
+						vulnerable = vulnerable.filter((p) => !ignored.includes(p.id.toLowerCase()));
+						outdated = outdated.filter((p) => !ignored.includes(p.id.toLowerCase()));
+						deprecated = deprecated.filter((p) => !ignored.includes(p.id.toLowerCase()));
+
 						ScanState.setResults(vulnerable, outdated, deprecated);
 
 						//Cpm
@@ -615,8 +649,9 @@ export function activate(context: vscode.ExtensionContext) {
 		openNugetCommand,
 		restoreAllCommand,
 		showGraphCommand,
-		logger,
-		explainCommand
+		explainCommand,
+		ignorePackageCommand,
+		logger
 	);
 
 	const scanOnStartup = vscode.workspace

@@ -62,6 +62,10 @@
       {
         "command": "packageHub.showDependencyGraph",
         "title": "PackageHub: Show Dependency Graph"
+      },
+      {
+        "command": "packageHub.ignorePackage",
+        "title": "PackageHub: Ignore Package"
       }
     ],
     "viewsContainers": {
@@ -100,6 +104,14 @@
             "type": "boolean",
             "default": true,
             "description": "Workspace açılınca otomatik paket taraması yap"
+          },
+          "packageHub.ignoredPackages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Scan sonuçlarından gizlenecek paket id listesi"
           }
         }
       }
