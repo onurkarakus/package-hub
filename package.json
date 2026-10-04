@@ -132,6 +132,15 @@
           "command": "packageHub.openNugetPage",
           "when": "view == packageHubExplorer && viewItem == packageHub.package",
           "group": "packageHub@3"
+        },
+        {
+          "command": "packageHub.ignorePackage",
+          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "group": "packageHub@4"
+        },
+        {
+          "command": "packageHub.unignorePackage",
+          "title": "PackageHub: Unignore Package"
         }
       ]
     }
