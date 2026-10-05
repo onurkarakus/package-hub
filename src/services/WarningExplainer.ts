@@ -8,14 +8,16 @@ export interface ExplanationResult {
     advisoryUrl?: string;
     isVulnerable: boolean;
     isOutdated: boolean;
+    isDeprecated: boolean;
 }
 
 export class WarningExplainer {
     static explain(
         packageId: string,
-        currentVersion: string,
+        _currentVersion: string,
         vulnerable?: PackageInfo,
-        outdated?: PackageInfo
+        outdated?: PackageInfo,
+        deprecated?: PackageInfo
     ): ExplanationResult {
         if (vulnerable) {
             return {
@@ -26,6 +28,19 @@ export class WarningExplainer {
                 advisoryUrl: vulnerable.advisoryUrl,
                 isVulnerable: true,
                 isOutdated: false,
+                isDeprecated: false,
+            };
+        }
+
+        if (deprecated) {
+            return {
+                title: packageId,
+                reason: "This package is deprecated",
+                recommendedVersion: deprecated.latestVersion,
+                advisoryUrl: deprecated.advisoryUrl,
+                isVulnerable: false,
+                isOutdated: false,
+                isDeprecated: true,
             };
         }
 
@@ -36,6 +51,7 @@ export class WarningExplainer {
                 recommendedVersion: outdated.latestVersion,
                 isVulnerable: false,
                 isOutdated: true,
+                isDeprecated: false,
             };
         }
 
@@ -44,6 +60,7 @@ export class WarningExplainer {
             reason: "No known issues found in the last scan",
             isVulnerable: false,
             isOutdated: false,
+            isDeprecated: false,
         };
     }
 }

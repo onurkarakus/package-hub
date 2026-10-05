@@ -66,6 +66,10 @@
       {
         "command": "packageHub.ignorePackage",
         "title": "PackageHub: Ignore Package"
+      },
+      {
+        "command": "packageHub.unignorePackage",
+        "title": "PackageHub: Unignore Package"
       }
     ],
     "viewsContainers": {
@@ -137,10 +141,6 @@
           "command": "packageHub.ignorePackage",
           "when": "view == packageHubExplorer && viewItem == packageHub.package",
           "group": "packageHub@4"
-        },
-        {
-          "command": "packageHub.unignorePackage",
-          "title": "PackageHub: Unignore Package"
         }
       ]
     }

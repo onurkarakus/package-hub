@@ -1,3 +1,4 @@
+import * as path from "path";
 import * as vscode from "vscode";
 import { DotnetCli } from "./services/DotnetCli";
 import { WorkspaceScanner } from "./services/WorkspaceScanner";
@@ -6,12 +7,91 @@ import { CacheService } from "./services/CacheService";
 import { PackageHubTreeProvider } from "./tree/PackageHubTreeProvider";
 import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
-import { PackageDecorationProvider } from "./providers/PackageDecorationProvider";
+import { PackageAuditDiagnostics } from "./providers/PackageAuditDiagnostics";
+import { PackageCodeActionProvider } from "./providers/PackageCodeActionProvider";
 import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
 import { DependencyGraphPanel } from "./webview/DependencyGraphPanel";
 
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
+
+const PROJECT_SCAN_CONCURRENCY = 2;
+
+interface TargetScan {
+	vulnerable: any[];
+	outdated: any[];
+	deprecated: any[];
+}
+
+async function scanOneTarget(
+	cli: DotnetCli,
+	targetPath: string,
+	label: string,
+	signal: AbortSignal
+): Promise<TargetScan> {
+	logger.info(`[${label}] vulnerable başladı`);
+	logger.info(`[${label}] outdated başladı`);
+	logger.info(`[${label}] deprecated başladı`);
+
+	const track = (name: string, work: Promise<any[]>) =>
+		work.then((value) => {
+			logger.info(`[${label}] ${name} bitti`);
+			return value;
+		});
+
+	const settled = await Promise.allSettled([
+		track("vulnerable", cli.listVulnerable(targetPath, false, signal)),
+		track("outdated", cli.listOutdated(targetPath, false, "latest", signal)),
+		track("deprecated", cli.listDeprecated(targetPath, signal)),
+	]);
+
+	if (settled.some((result) =>
+		result.status === "rejected"
+		&& String(result.reason?.message || result.reason).includes("`dotnet` komutu bulunamadı")
+	)) {
+		throw new Error("`dotnet` komutu bulunamadı. .NET SDK yüklü mü?");
+	}
+
+	const names = ["vulnerable", "outdated", "deprecated"] as const;
+	const lists = names.map((name, index) => {
+		const result = settled[index];
+		if (result.status === "fulfilled") {
+			return result.value;
+		}
+
+		if (!signal.aborted) {
+			logger.error(`[${label}] ${name} alınamadı: ${result.reason?.message || result.reason}`);
+		}
+		return [];
+	});
+
+	return {
+		vulnerable: lists[0],
+		outdated: lists[1],
+		deprecated: lists[2],
+	};
+}
+
+async function runPool(
+	count: number,
+	limit: number,
+	token: vscode.CancellationToken,
+	worker: (index: number) => Promise<void>
+): Promise<void> {
+	let cursor = 0;
+	const lanes = Math.min(limit, count);
+
+	await Promise.all(Array.from({ length: lanes }, async () => {
+		while (cursor < count) {
+			if (token.isCancellationRequested) {
+				return;
+			}
+
+			const index = cursor++;
+			await worker(index);
+		}
+	}));
+}
 
 export function activate(context: vscode.ExtensionContext) {
 	logger.info("PackageHub aktif edildi.");
@@ -40,47 +120,24 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Hover
+	const auditDiagnostics = new PackageAuditDiagnostics(workspaceScanner);
+	const codeActionProvider = new PackageCodeActionProvider(dotnetCli, workspaceScanner);
+
+	// Hover açıklamasıdır. Güncelleme linkleri ampulün önbelleğini okur, yeni dotnet çağrısı başlatmaz.
 	const hoverProvider = vscode.languages.registerHoverProvider(
 		[
 			{ language: "xml", scheme: "file", pattern: "**/*.{csproj,props}" }
 		],
-		new PackageHoverProvider()
+		new PackageHoverProvider(codeActionProvider, workspaceScanner)
 	);
 	context.subscriptions.push(hoverProvider);
-
-	// Decorations
-	const decorationProvider = new PackageDecorationProvider();
-	context.subscriptions.push({ dispose: () => decorationProvider.dispose() });
-
-	// Editör değiştiğinde dekorasyonları güncelle (sadece bir kere kaydet)
 	context.subscriptions.push(
-		vscode.window.onDidChangeActiveTextEditor(() => {
-			decorationProvider.updateDecorations();
-		})
-	);
-
-	const projectFileWatcher = vscode.workspace.createFileSystemWatcher(
-		"**/*.{csproj,props}"
-	);
-
-	const onProjectFileChanged = () => {
-		logger.info("Proje dosyası değişti, dekorasyon yenileniyor.");
-		decorationProvider.updateDecorations();
-	};
-
-	projectFileWatcher.onDidChange(onProjectFileChanged);
-	projectFileWatcher.onDidCreate(onProjectFileChanged);
-	projectFileWatcher.onDidDelete(onProjectFileChanged);
-
-	context.subscriptions.push(
-		projectFileWatcher,
-		vscode.workspace.onDidSaveTextDocument((doc) => {
-			if (doc.fileName.endsWith(".csproj") || doc.fileName.endsWith(".props")) {
-				logger.info(`Kaydedildi: ${doc.fileName}`);
-				decorationProvider.updateDecorations();
-			}
-		})
+		auditDiagnostics,
+		vscode.languages.registerCodeActionsProvider(
+			{ scheme: "file", pattern: "**/*.{csproj,props}" },
+			codeActionProvider,
+			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+		)
 	);
 
 	// Health Dashboard
@@ -299,10 +356,13 @@ export function activate(context: vscode.ExtensionContext) {
 				{
 					location: vscode.ProgressLocation.Notification,
 					title: "PackageHub",
-					cancellable: false,
+					cancellable: true,
 				},
-				async (progress) => {
+				async (progress, token) => {
 					progress.report({ message: "Paketler taranıyor..." });
+
+					const abort = new AbortController();
+					const cancelSub = token.onCancellationRequested(() => abort.abort());
 
 					try {
 						logger.show(true);
@@ -320,13 +380,21 @@ export function activate(context: vscode.ExtensionContext) {
 							s.fsPath.toLowerCase().endsWith(".sln")
 						);
 
+						if (token.isCancellationRequested) {
+							logger.info("Tarama iptal edildi. Sonuç çizilmedi.");
+							return;
+						}
+
 						if (solutions.length > 0) {
 							const targetPath = solutions[0].fsPath;
+							const label = path.basename(targetPath);
 							logger.info(`Solution bulundu: ${targetPath}`);
+							progress.report({ message: `1/1 ${label}` });
 
-							vulnerable = await dotnetCli.listVulnerable(targetPath, false);
-							outdated = await dotnetCli.listOutdated(targetPath, false);
-							deprecated = await dotnetCli.listDeprecated(targetPath);
+							const lists = await scanOneTarget(dotnetCli, targetPath, label, abort.signal);
+							vulnerable = lists.vulnerable;
+							outdated = lists.outdated;
+							deprecated = lists.deprecated;
 						} else {
 							// 2. Solution yoksa TÜM projeleri tara
 							const projects = await workspaceScanner.findProjects();
@@ -344,25 +412,39 @@ export function activate(context: vscode.ExtensionContext) {
 							const allOutdated: any[] = [];
 							const allDeprecated: any[] = [];
 
-							for (const project of projects) {
+							await runPool(projects.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
+								const project = projects[index];
+								const label = workspaceScanner.getProjectName(project);
+								progress.report({ message: `${index + 1}/${projects.length} ${label}` });
 								logger.info(`Taranıyor: ${project.fsPath}`);
 
 								try {
-									const vul = await dotnetCli.listVulnerable(project.fsPath, false);
-									const out = await dotnetCli.listOutdated(project.fsPath, false);
-									const dep = await dotnetCli.listDeprecated(project.fsPath);
-
-									allVulnerable.push(...vul);
-									allOutdated.push(...out);
-									allDeprecated.push(...dep);
+									const lists = await scanOneTarget(
+										dotnetCli,
+										project.fsPath,
+										label,
+										abort.signal
+									);
+									allVulnerable.push(...lists.vulnerable);
+									allOutdated.push(...lists.outdated);
+									allDeprecated.push(...lists.deprecated);
 								} catch (projectError: any) {
 									logger.error(`Proje taranamadı (${project.fsPath}): ${projectError.message}`);
+									if (String(projectError.message).includes("`dotnet` komutu bulunamadı")) {
+										abort.abort();
+										throw projectError;
+									}
 								}
-							}
+							});
 
 							vulnerable = mergeById(allVulnerable);
 							outdated = mergeById(allOutdated);
 							deprecated = mergeById(allDeprecated);
+						}
+
+						if (token.isCancellationRequested) {
+							logger.info("Tarama iptal edildi. Sonuç çizilmedi.");
+							return;
 						}
 
 						const ignored = (
@@ -396,16 +478,6 @@ export function activate(context: vscode.ExtensionContext) {
 						// Tree View
 						treeProvider.refresh();
 
-						// Scan State (Hover + Decorations için)
-
-
-
-						vulnerable = vulnerable.filter((p) => !ignored.includes(p.id.toLowerCase()));
-						outdated = outdated.filter((p) => !ignored.includes(p.id.toLowerCase()));
-						deprecated = deprecated.filter((p) => !ignored.includes(p.id.toLowerCase()));
-
-						ScanState.setResults(vulnerable, outdated, deprecated);
-
 						//Cpm
 						const cpmFiles = await workspaceScanner.findCentralPackageManagementFiles();
 						ScanState.setCpm(cpmFiles.length > 0);
@@ -414,8 +486,13 @@ export function activate(context: vscode.ExtensionContext) {
 						// Update Dashboard If Open
 						HealthDashboardPanel.refreshIfOpen();
 
-						// Decorations
-						decorationProvider.updateDecorations();
+						codeActionProvider.clearCache();
+						try {
+							await auditDiagnostics.refresh();
+							void codeActionProvider.prefetch(auditDiagnostics.affectedProjects());
+						} catch (diagError: any) {
+							logger.error(`Quick Fix tanı hatası: ${diagError.message}`);
+						}
 
 						//Graph
 						DependencyGraphPanel.refreshIfOpen();
@@ -446,11 +523,18 @@ export function activate(context: vscode.ExtensionContext) {
 							});
 						}
 					} catch (error: any) {
+						if (token.isCancellationRequested) {
+							logger.info("Tarama iptal edildi. Sonuç çizilmedi.");
+							return;
+						}
+
 						const errorMessage = error.message || String(error);
 						logger.error(`Tarama hatası: ${errorMessage}`);
 						vscode.window.showErrorMessage(
 							`PackageHub tarama hatası: ${errorMessage}`
 						);
+					} finally {
+						cancelSub.dispose();
 					}
 				}
 			);
@@ -704,6 +788,27 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
+	const openAdvisoryCommand = vscode.commands.registerCommand(
+		"packageHub.openAdvisory",
+		async (url?: string) => {
+			if (!url) {
+				vscode.window.showWarningMessage("Advisory adresi yok. Güncelleme başlatılmadı.");
+				return;
+			}
+
+			await vscode.env.openExternal(vscode.Uri.parse(url));
+		}
+	);
+
+	const quickFixBlockedCommand = vscode.commands.registerCommand(
+		"packageHub.quickFixBlocked",
+		async (message?: string) => {
+			vscode.window.showWarningMessage(
+				message || "Patch sürümü yok. Güncelleme başlatılmadı."
+			);
+		}
+	);
+
 	context.subscriptions.push(
 		scanCommand,
 		updateCommand,
@@ -716,6 +821,8 @@ export function activate(context: vscode.ExtensionContext) {
 		explainCommand,
 		ignorePackageCommand,
 		unignorePackageCommand,
+		openAdvisoryCommand,
+		quickFixBlockedCommand,
 		logger
 	);
 

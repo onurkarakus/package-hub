@@ -13,13 +13,15 @@ export class DotnetCli {
     private async run(
         command: string,
         cwd: string,
-        timeoutMs: number = 60000
+        timeoutMs: number = 60000,
+        signal?: AbortSignal
     ): Promise<string> {
         try {
             const { stdout, stderr } = await execAsync(command, {
                 cwd,
                 timeout: timeoutMs,
                 maxBuffer: 10 * 1024 * 1024,
+                signal,
             });
 
             if (stdout && stdout.trim()) {
@@ -32,6 +34,12 @@ export class DotnetCli {
 
             return "";
         } catch (error: any) {
+            if (signal?.aborted || error.name === "AbortError" || error.code === "ABORT_ERR") {
+                const abortError = new Error("Tarama iptal edildi.");
+                abortError.name = "AbortError";
+                throw abortError;
+            }
+
             if (error.code === "ENOENT") {
                 throw new Error("`dotnet` komutu bulunamadı. .NET SDK yüklü mü?");
             }
@@ -52,12 +60,13 @@ export class DotnetCli {
    */
     async listVulnerable(
         targetPath: string,
-        includeTransitive: boolean = true
+        includeTransitive: boolean = true,
+        signal?: AbortSignal
     ): Promise<PackageInfo[]> {
         const transitiveFlag = includeTransitive ? "--include-transitive" : "";
         const command = `dotnet list "${targetPath}" package --vulnerable ${transitiveFlag} --format json`;
         const cwd = require("path").dirname(targetPath);
-        const output = await this.run(command, cwd);
+        const output = await this.run(command, cwd, 60000, signal);
 
         return this.parsePackageList(output, "vulnerable");
     }
@@ -68,24 +77,47 @@ export class DotnetCli {
    */
     async listOutdated(
         targetPath: string,
-        includeTransitive: boolean = true
+        includeTransitive: boolean = true,
+        channel: "latest" | "patch" | "minor" = "latest",
+        signal?: AbortSignal
     ): Promise<PackageInfo[]> {
+        const flags = [
+            "--outdated",
+            includeTransitive ? "--include-transitive" : "",
+            channel === "patch" ? "--highest-patch" : "",
+            channel === "minor" ? "--highest-minor" : "",
+            "--format json",
+        ].filter(Boolean).join(" ");
 
-        const transitiveFlag = includeTransitive ? "--include-transitive" : "";
-        const command = `dotnet list "${targetPath}" package --outdated ${transitiveFlag} --format json`;
-        const cwd = require("path").dirname(targetPath);
-        const output = await this.run(command, cwd);
+        const cwd = path.dirname(targetPath);
+        const verbFirst = `dotnet list "${targetPath}" package ${flags}`;
+        const nounFirst = `dotnet package list --project "${targetPath}" ${flags}`;
 
-        return this.parsePackageList(output, "outdated");
+        try {
+            const output = await this.run(verbFirst, cwd, 60000, signal);
+            return this.parsePackageList(output, "outdated");
+        } catch (error: any) {
+            const message = error.message || String(error);
+            if (message.includes("`dotnet` komutu bulunamadı") || error.name === "AbortError" || signal?.aborted) {
+                throw error;
+            }
+
+            try {
+                const output = await this.run(nounFirst, cwd, 60000, signal);
+                return this.parsePackageList(output, "outdated");
+            } catch {
+                throw error;
+            }
+        }
     }
 
     /**
    * Deprecated paketleri listeler
    */
-    async listDeprecated(targetPath: string): Promise<PackageInfo[]> {
+    async listDeprecated(targetPath: string, signal?: AbortSignal): Promise<PackageInfo[]> {
         const cwd = require("path").dirname(targetPath);
         const command = `dotnet list "${targetPath}" package --deprecated --format json`;
-        const output = await this.run(command, cwd);
+        const output = await this.run(command, cwd, 60000, signal);
 
         return this.parsePackageList(output, "deprecated");
     }

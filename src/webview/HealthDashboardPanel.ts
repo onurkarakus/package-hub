@@ -83,6 +83,12 @@ export class HealthDashboardPanel {
 
   private _getHtml(vulnerable: any[], outdated: any[], deprecated: any[]): string {
 
+    const ignoredCount = (
+      vscode.workspace
+        .getConfiguration("packageHub")
+        .get<string[]>("ignoredPackages") || []
+    ).length;
+
     const conflicts = ScanState.getVersionConflicts();
     const conflictCount = conflicts.length;
 
@@ -529,6 +535,10 @@ export class HealthDashboardPanel {
     }
   </script>
   <footer style="margin-top: 24px; opacity: 0.7; font-size: 0.85rem;">
+     <p style="opacity:0.7; font-size:0.85rem;">
+      Ignored: ${ignoredCount}
+      ${ignoredCount > 0 ? "(PackageHub: Unignore Package ile geri al)" : ""}
+    </p>
     ${scannedText}
   </footer>
 </body>
