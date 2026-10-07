@@ -112,8 +112,51 @@ export class DotnetCli {
     }
 
     /**
-   * Deprecated paketleri listeler
-   */
+     * Paketin projeye neden girdiğini düz metin olarak döner.
+     * SDK 10 argüman sırası proje, sonra paket. Eski SDK için --project denenir.
+     */
+    async why(projectPath: string, packageId: string): Promise<string> {
+        const cwd = path.dirname(projectPath);
+        const positional = `dotnet nuget why "${projectPath}" "${packageId}"`;
+        const withProjectFlag = `dotnet nuget why "${packageId}" --project "${projectPath}"`;
+
+        try {
+            return await this.readWhy(positional, cwd);
+        } catch (error: any) {
+            const message = error.message || String(error);
+            if (this.whyCommandMissing(message)) {
+                throw new Error("`dotnet nuget why` için .NET SDK 8.0.400 veya daha yenisi gerekir. Ağaç uydurulmadı.");
+            }
+
+            try {
+                return await this.readWhy(withProjectFlag, cwd);
+            } catch (second: any) {
+                const secondMessage = second.message || String(second);
+                if (this.whyCommandMissing(message) || this.whyCommandMissing(secondMessage)) {
+                    throw new Error("`dotnet nuget why` için .NET SDK 8.0.400 veya daha yenisi gerekir. Ağaç uydurulmadı.");
+                }
+
+                throw new Error(`${secondMessage}\nAğaç uydurulmadı.`);
+            }
+        }
+    }
+
+    private async readWhy(command: string, cwd: string): Promise<string> {
+        const output = await this.run(command, cwd);
+        if (!output.trim()) {
+            throw new Error("dotnet nuget why çıktı vermedi.\nAğaç uydurulmadı.");
+        }
+
+        return output;
+    }
+
+    private whyCommandMissing(message: string): boolean {
+        return /unrecognized command or argument ['"]why['"]/i.test(message);
+    }
+
+    /**
+     * Deprecated paketleri listeler
+     */
     async listDeprecated(targetPath: string, signal?: AbortSignal): Promise<PackageInfo[]> {
         const cwd = require("path").dirname(targetPath);
         const command = `dotnet list "${targetPath}" package --deprecated --format json`;

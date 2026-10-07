@@ -23,6 +23,13 @@ export class HealthDashboardPanel {
               version: message.version,
             });
             break;
+          case "safeUpdate":
+            if (message.channel === "patch") {
+              vscode.commands.executeCommand("packageHub.updateHighestPatch");
+            } else if (message.channel === "minor") {
+              vscode.commands.executeCommand("packageHub.updateHighestMinor");
+            }
+            break;
           case "setViewMode":
             vscode.workspace
               .getConfiguration("packageHub")
@@ -135,7 +142,9 @@ export class HealthDashboardPanel {
                 ? "Deprecated"
                 : "Outdated";
 
-          const updateButton = `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update</button>`;
+          const updateButton = latest
+            ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update to latest</button>`
+            : "";
 
           return `
         <tr>
@@ -329,7 +338,7 @@ export class HealthDashboardPanel {
 
         const latest = p.latestVersion || "";
         const updateButton = latest
-          ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update</button>`
+          ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update to latest</button>`
           : "";
 
         return `
@@ -459,6 +468,13 @@ export class HealthDashboardPanel {
     button:hover {
       background: var(--vscode-button-hoverBackground);
     }
+    .safe-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .safe-actions button { margin-bottom: 0; }
     details {
       margin-bottom: 12px;
       border: 1px solid var(--vscode-widget-border);
@@ -505,7 +521,11 @@ export class HealthDashboardPanel {
     </div>
   </div>
 
-  <button onclick="refresh()">Refresh Scan</button>
+  <div class="safe-actions">
+    <button onclick="refresh()">Refresh Scan</button>
+    <button onclick="safeUpdate('patch')">Highest patch</button>
+    <button onclick="safeUpdate('minor')">Highest minor</button>
+  </div>
 
   <div class="view-switch">
     <button class="${viewMode === "list" ? "active" : ""}" onclick="setViewMode('list')">Liste</button>
@@ -528,6 +548,10 @@ export class HealthDashboardPanel {
         packageId: packageId,
         version: version
       });
+    }
+
+    function safeUpdate(channel) {
+      vscode.postMessage({ command: "safeUpdate", channel: channel });
     }
 
     function setViewMode(mode) {

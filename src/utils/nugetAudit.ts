@@ -93,6 +93,37 @@ export function chooseQuickFixVersions(
     };
 }
 
+export function isSafeChannelTarget(
+    current: string | undefined,
+    candidate: string | undefined,
+    channel: "patch" | "minor"
+): boolean {
+    if (!current || !candidate || compareNuGetVersions(candidate, current) <= 0) {
+        return false;
+    }
+
+    const left = versionParts(current);
+    const right = versionParts(candidate);
+    if ((left[0] ?? 0) !== (right[0] ?? 0)) {
+        return false;
+    }
+
+    if (channel === "patch" && (left[1] ?? 0) !== (right[1] ?? 0)) {
+        return false;
+    }
+
+    return true;
+}
+
+function versionParts(value: string): number[] {
+    const cleaned = value.trim().replace(/^\[|\]$/g, "");
+    const [main] = cleaned.split("-", 2);
+    return main.split(".").map((part) => {
+        const numeric = parseInt(part, 10);
+        return Number.isFinite(numeric) ? numeric : 0;
+    });
+}
+
 export function compareNuGetVersions(left: string, right: string): number {
     const split = (value: string) => {
         const cleaned = value.trim().replace(/^\[|\]$/g, "");

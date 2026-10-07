@@ -23,7 +23,13 @@ export class PackageHoverProvider implements vscode.HoverProvider {
 
         const packageId = ref.id;
         const found = ScanState.findPackage(packageId);
-        const currentVersion = ref.version || found.vulnerable?.version || found.outdated?.version;
+        const usesCentral = ref.kind === "version" || !ref.version;
+        const centralVersion = ref.kind === "version"
+            ? ref.version
+            : ScanState.getCentralVersion(packageId);
+        const currentVersion = usesCentral
+            ? centralVersion
+            : (ref.version || found.vulnerable?.version || found.outdated?.version);
         const explanation = WarningExplainer.explain(
             packageId,
             currentVersion || "unknown",
@@ -37,7 +43,15 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         md.supportHtml = true;
 
         md.appendMarkdown(`### ${explanation.title}\n\n`);
-        md.appendMarkdown(`**Current Version:** \`${currentVersion || "unknown"}\`\n\n`);
+        md.appendMarkdown(
+            `**Current Version:** \`${currentVersion || "unknown"}\`${usesCentral ? " · CPM" : ""}\n\n`
+        );
+        if (usesCentral && centralVersion) {
+            md.appendMarkdown(`Version is read from Directory.Packages.props.\n\n`);
+        }
+        if (usesCentral && !centralVersion) {
+            md.appendMarkdown(`No PackageVersion entry. No version was invented.\n\n`);
+        }
 
         if (explanation.isVulnerable) {
             md.appendMarkdown(`---\n\n`);

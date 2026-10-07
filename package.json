@@ -64,6 +64,22 @@
         "title": "PackageHub: Show Dependency Graph"
       },
       {
+        "command": "packageHub.copyHealthReport",
+        "title": "PackageHub: Copy Health Report"
+      },
+      {
+        "command": "packageHub.updateHighestPatch",
+        "title": "PackageHub: Update to Highest Patch"
+      },
+      {
+        "command": "packageHub.updateHighestMinor",
+        "title": "PackageHub: Update to Highest Minor"
+      },
+      {
+        "command": "packageHub.whyPackage",
+        "title": "PackageHub: Why is this here?"
+      },
+      {
         "command": "packageHub.ignorePackage",
         "title": "PackageHub: Ignore Package"
       },
@@ -141,6 +157,18 @@
           "command": "packageHub.ignorePackage",
           "when": "view == packageHubExplorer && viewItem == packageHub.package",
           "group": "packageHub@4"
+        },
+        {
+          "command": "packageHub.whyPackage",
+          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "group": "packageHub@5"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "packageHub.whyPackage",
+          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "group": "packageHub@1"
         }
       ]
     }

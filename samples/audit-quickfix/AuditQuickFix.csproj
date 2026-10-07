@@ -7,9 +7,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <!-- Deneme paketi. 12.0.1 için NU1903. Patch 12.0.3 hâlâ açık. Latest 13.0.4 kapatır. -->
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+    <PackageReference Include="Newtonsoft.Json" />
   </ItemGroup>
 
 </Project>

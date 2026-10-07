@@ -7,8 +7,13 @@ import { CacheService } from "./services/CacheService";
 import { PackageHubTreeProvider } from "./tree/PackageHubTreeProvider";
 import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
+import { refreshCentralPackages } from "./services/CentralPackages";
+import { restoreLastScan, saveLastScan } from "./services/LastScanStore";
+import { buildHealthReport } from "./services/HealthReport";
+import { isSafeChannelTarget, readPackageRef } from "./utils/nugetAudit";
 import { PackageAuditDiagnostics } from "./providers/PackageAuditDiagnostics";
 import { PackageCodeActionProvider } from "./providers/PackageCodeActionProvider";
+import { PackageCodeLensProvider } from "./providers/PackageCodeLensProvider";
 import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
 import { DependencyGraphPanel } from "./webview/DependencyGraphPanel";
 
@@ -93,6 +98,144 @@ async function runPool(
 	}));
 }
 
+async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
+	const projects = await workspaceScanner.findProjects();
+	if (projects.length === 0) {
+		vscode.window.showErrorMessage("Workspace içinde hiç .csproj dosyası bulunamadı.");
+		return;
+	}
+
+	const label = channel === "patch" ? "Highest patch" : "Highest minor";
+	const targets: {
+		packageId: string;
+		from: string;
+		to: string;
+		projectPath: string;
+		projectName: string;
+	}[] = [];
+	let blocked = false;
+
+	await vscode.window.withProgress(
+		{
+			location: vscode.ProgressLocation.Notification,
+			title: "PackageHub",
+			cancellable: false,
+		},
+		async (progress) => {
+			for (const project of projects) {
+				if (blocked) {
+					return;
+				}
+
+				const projectName = workspaceScanner.getProjectName(project);
+				progress.report({ message: `${label} okunuyor… ${projectName}` });
+
+				try {
+					const listed = await dotnetCli.listOutdated(project.fsPath, false, channel);
+					for (const pkg of listed) {
+						if (!pkg.latestVersion || !isSafeChannelTarget(pkg.version, pkg.latestVersion, channel)) {
+							continue;
+						}
+
+						targets.push({
+							packageId: pkg.id,
+							from: pkg.version,
+							to: pkg.latestVersion,
+							projectPath: project.fsPath,
+							projectName,
+						});
+					}
+				} catch (error: any) {
+					const message = error.message || String(error);
+					logger.show(true);
+					logger.error(`${label} listesi alınamadı (${project.fsPath}): ${message}`);
+					if (message.includes("`dotnet` komutu bulunamadı")) {
+						blocked = true;
+						vscode.window.showErrorMessage(message);
+					}
+				}
+			}
+		}
+	);
+
+	if (blocked) {
+		return;
+	}
+
+	if (targets.length === 0) {
+		vscode.window.showInformationMessage(`${label} için güncellenecek paket yok. Major sürüm yazılmaz.`);
+		return;
+	}
+
+	const preview = targets
+		.slice(0, 15)
+		.map((target) => `${target.packageId} ${target.from} → ${target.to} (${target.projectName})`);
+	const extra = targets.length > 15 ? `\n… ve ${targets.length - 15} hedef daha` : "";
+	const confirm = await vscode.window.showWarningMessage(
+		`${label}\n\n${preview.join("\n")}${extra}\n\nMajor sürüm yazılmaz.`,
+		{ modal: true },
+		"Evet, Güncelle"
+	);
+
+	if (confirm !== "Evet, Güncelle") {
+		logger.info(`${label} iptal edildi.`);
+		return;
+	}
+
+	await vscode.window.withProgress(
+		{
+			location: vscode.ProgressLocation.Notification,
+			title: "PackageHub",
+			cancellable: false,
+		},
+		async (progress) => {
+			try {
+				for (const target of targets) {
+					progress.report({
+						message: `${target.packageId} → ${target.to} (${target.projectName})`,
+					});
+					await dotnetCli.updatePackage(target.projectPath, target.packageId, target.to);
+					logger.info(`Güncellendi: ${target.packageId} → ${target.to} (${target.projectPath})`);
+				}
+
+				progress.report({ message: "Restore çalışıyor..." });
+				const solutions = (await workspaceScanner.findSolutions()).filter((item) =>
+					item.fsPath.toLowerCase().endsWith(".sln")
+				);
+				if (solutions.length > 0) {
+					await dotnetCli.restore(solutions[0].fsPath);
+				} else {
+					for (const project of projects) {
+						await dotnetCli.restore(project.fsPath);
+					}
+				}
+
+				vscode.window.showInformationMessage(`${label}: ${targets.length} hedef güncellendi.`);
+				await vscode.commands.executeCommand("packageHub.scanWorkspace");
+			} catch (error: any) {
+				const message = error.message || String(error);
+				logger.show(true);
+				logger.error(`${label} hatası: ${message}`);
+				vscode.window.showErrorMessage(`Güncelleme başarısız: ${message}`);
+			}
+		}
+	);
+}
+
+function paintScanStatus(item: vscode.StatusBarItem): void {
+	const vulnerable = ScanState.getVulnerable();
+	const outdated = ScanState.getOutDated();
+	const deprecated = ScanState.getDeprecated();
+
+	if (vulnerable.length > 0 || outdated.length > 0) {
+		item.text = `$(warning) ${vulnerable.length} vuln · ${outdated.length} outdated · ${deprecated.length} deprecated`;
+		item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+	} else {
+		item.text = `$(check) Packages healthy`;
+		item.backgroundColor = undefined;
+	}
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	logger.info("PackageHub aktif edildi.");
 
@@ -120,8 +263,36 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	if (restoreLastScan(context.workspaceState)) {
+		paintScanStatus(statusBarItem);
+		treeProvider.refresh();
+		HealthDashboardPanel.refreshIfOpen();
+	} else {
+		statusBarItem.text = "$(package) PackageHub";
+	}
+
 	const auditDiagnostics = new PackageAuditDiagnostics(workspaceScanner);
 	const codeActionProvider = new PackageCodeActionProvider(dotnetCli, workspaceScanner);
+	const codeLensProvider = new PackageCodeLensProvider(codeActionProvider, workspaceScanner);
+	context.subscriptions.push(
+		codeLensProvider,
+		vscode.languages.registerCodeLensProvider(
+			{ scheme: "file", pattern: "**/*.{csproj,props}" },
+			codeLensProvider
+		)
+	);
+	if (ScanState.getScannedAt()) {
+		codeLensProvider.refresh();
+	}
+
+	void refreshCentralPackages(workspaceScanner)
+		.then(() => {
+			treeProvider.refresh();
+			HealthDashboardPanel.refreshIfOpen();
+		})
+		.catch((error: any) => {
+			logger.error(`CPM okunamadı: ${error.message}`);
+		});
 
 	// Hover açıklamasıdır. Güncelleme linkleri ampulün önbelleğini okur, yeni dotnet çağrısı başlatmaz.
 	const hoverProvider = vscode.languages.registerHoverProvider(
@@ -459,37 +630,42 @@ export function activate(context: vscode.ExtensionContext) {
 
 						ScanState.setResults(vulnerable, outdated, deprecated);
 
-						// Sonuç mesajı
+						paintScanStatus(statusBarItem);
+						treeProvider.refresh();
+
+						try {
+							await refreshCentralPackages(workspaceScanner);
+							logger.info(
+								ScanState.getCpm()
+									? `CPM: ${ScanState.getCentralVersionCount()} sürüm`
+									: "CPM: yok"
+							);
+						} catch (cpmError: any) {
+							logger.error(`CPM okunamadı: ${cpmError.message}`);
+						}
+
+						try {
+							await saveLastScan(context.workspaceState);
+						} catch (saveError: any) {
+							logger.error(`Son tarama kaydedilemedi: ${saveError.message}`);
+						}
+
 						const message = `Tarama tamamlandı → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}, Deprecated: ${deprecated.length}`;
 						vscode.window.showInformationMessage(message);
 						logger.info(message);
-
-						// Status Bar
-						if (vulnerable.length > 0 || outdated.length > 0) {
-							statusBarItem.text = `$(warning) ${vulnerable.length} vuln · ${outdated.length} outdated · ${deprecated.length} deprecated`;
-							statusBarItem.backgroundColor = new vscode.ThemeColor(
-								"statusBarItem.warningBackground"
-							);
-						} else {
-							statusBarItem.text = `$(check) Packages healthy`;
-							statusBarItem.backgroundColor = undefined;
-						}
-
-						// Tree View
-						treeProvider.refresh();
-
-						//Cpm
-						const cpmFiles = await workspaceScanner.findCentralPackageManagementFiles();
-						ScanState.setCpm(cpmFiles.length > 0);
-						logger.info(`CPM: ${cpmFiles.length > 0 ? "var" : "yok"}`);
 
 						// Update Dashboard If Open
 						HealthDashboardPanel.refreshIfOpen();
 
 						codeActionProvider.clearCache();
+						codeLensProvider.refresh();
 						try {
 							await auditDiagnostics.refresh();
-							void codeActionProvider.prefetch(auditDiagnostics.affectedProjects());
+							void codeActionProvider.prefetch(auditDiagnostics.affectedProjects())
+								.finally(() => {
+									logger.info("CodeLens patch listesi hazır.");
+									codeLensProvider.refresh();
+								});
 						} catch (diagError: any) {
 							logger.error(`Quick Fix tanı hatası: ${diagError.message}`);
 						}
@@ -669,6 +845,16 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
+	const updateHighestPatchCommand = vscode.commands.registerCommand(
+		"packageHub.updateHighestPatch",
+		() => applySafeUpdate("patch")
+	);
+
+	const updateHighestMinorCommand = vscode.commands.registerCommand(
+		"packageHub.updateHighestMinor",
+		() => applySafeUpdate("minor")
+	);
+
 	const updateSelectedCommand = vscode.commands.registerCommand(
 		"packageHub.updateSelectedPackage",
 		async (item?: any) => {
@@ -788,6 +974,112 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
+	const whyPackageCommand = vscode.commands.registerCommand(
+		"packageHub.whyPackage",
+		async (args?: { packageId?: string; projectName?: string }) => {
+			const requestedId = typeof args?.packageId === "string" ? args.packageId.trim() : "";
+			const requestedProject = typeof args?.projectName === "string" ? args.projectName.trim() : "";
+			const editor = vscode.window.activeTextEditor;
+
+			let packageId = requestedId;
+			if (!packageId && editor) {
+				packageId = readPackageRef(
+					editor.document.lineAt(editor.selection.active.line).text
+				)?.id || "";
+			}
+
+			if (!packageId) {
+				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				return;
+			}
+
+			const projects = await workspaceScanner.findProjects();
+			let projectPath: string | undefined;
+
+			if (requestedProject) {
+				const match = projects.find(
+					(project) => workspaceScanner.getProjectName(project) === requestedProject
+				);
+				if (!match) {
+					vscode.window.showWarningMessage(
+						`${packageId} için proje bulunamadı: ${requestedProject}`
+					);
+					return;
+				}
+				projectPath = match.fsPath;
+			} else if (editor?.document.uri.fsPath.toLowerCase().endsWith(".csproj")) {
+				projectPath = editor.document.uri.fsPath;
+			} else if (projects.length === 1) {
+				projectPath = projects[0].fsPath;
+			} else if (projects.length === 0) {
+				vscode.window.showErrorMessage("Workspace içinde hiç .csproj dosyası bulunamadı.");
+				return;
+			} else {
+				const picked = await vscode.window.showQuickPick(
+					projects.map((project) => ({
+						label: workspaceScanner.getProjectName(project),
+						description: project.fsPath,
+						fsPath: project.fsPath,
+					})),
+					{ placeHolder: "Why için proje seç" }
+				);
+				if (!picked) {
+					return;
+				}
+				projectPath = picked.fsPath;
+			}
+
+			if (!projectPath) {
+				vscode.window.showErrorMessage("Workspace içinde hiç .csproj dosyası bulunamadı.");
+				return;
+			}
+
+			const selectedProject = projectPath;
+
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: "PackageHub",
+					cancellable: false,
+				},
+				async (progress) => {
+					progress.report({ message: `${packageId} neden burada…` });
+
+					try {
+						const text = await dotnetCli.why(selectedProject, packageId);
+						logger.show(true);
+						logger.info(`Why: ${packageId} (${selectedProject})`);
+						logger.appendLine(text);
+						DependencyGraphPanel.showWhy(packageId, text);
+						vscode.window.showInformationMessage(
+							`${packageId} kartı PackageHub Dependency Graph sekmesinde açıldı. Aynı metin Output kanalında.`
+						);
+					} catch (error: any) {
+						const message = error.message || String(error);
+						logger.show(true);
+						logger.error(`Why başarısız: ${message}`);
+						DependencyGraphPanel.showWhy(packageId, message);
+						vscode.window.showErrorMessage(message);
+					}
+				}
+			);
+		}
+	);
+
+	const copyHealthReportCommand = vscode.commands.registerCommand(
+		"packageHub.copyHealthReport",
+		async () => {
+			const markdown = buildHealthReport();
+			if (!markdown) {
+				vscode.window.showInformationMessage("Scan first");
+				return;
+			}
+
+			await vscode.env.clipboard.writeText(markdown);
+			vscode.window.showInformationMessage("Sağlık raporu panoya kopyalandı.");
+		}
+	);
+
 	const openAdvisoryCommand = vscode.commands.registerCommand(
 		"packageHub.openAdvisory",
 		async (url?: string) => {
@@ -809,20 +1101,34 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
+	const codeLensPendingCommand = vscode.commands.registerCommand(
+		"packageHub.codeLensPending",
+		async () => {
+			vscode.window.showInformationMessage(
+				"Patch listesi hazır olunca satırın üstündeki lens sürümü yazar. Latest bu satırda yok."
+			);
+		}
+	);
+
 	context.subscriptions.push(
 		scanCommand,
 		updateCommand,
+		updateHighestPatchCommand,
+		updateHighestMinorCommand,
 		showDashboardCommand,
 		updateSelectedCommand,
 		showPackageInfoCommand,
 		openNugetCommand,
 		restoreAllCommand,
 		showGraphCommand,
+		whyPackageCommand,
+		copyHealthReportCommand,
 		explainCommand,
 		ignorePackageCommand,
 		unignorePackageCommand,
 		openAdvisoryCommand,
 		quickFixBlockedCommand,
+		codeLensPendingCommand,
 		logger
 	);
 

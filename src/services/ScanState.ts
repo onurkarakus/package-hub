@@ -6,6 +6,7 @@ export class ScanState {
     private static deprecated: PackageInfo[] = [];
     private static scannedAt: Date | undefined;
     private static hasCpm = false;
+    private static centralVersions = new Map<string, string>();
 
     static setCpm(hasCpm: boolean) {
         this.hasCpm = hasCpm;
@@ -15,14 +16,30 @@ export class ScanState {
         return this.hasCpm;
     }
 
+    static setCentralVersions(versions: { id: string; version: string }[]) {
+        this.centralVersions = new Map(
+            versions.map((item) => [item.id.toLowerCase(), item.version])
+        );
+    }
+
+    static getCentralVersion(packageId: string): string | undefined {
+        return this.centralVersions.get(packageId.toLowerCase());
+    }
+
+    static getCentralVersionCount(): number {
+        return this.centralVersions.size;
+    }
+
     static setResults(
         vulnerable: PackageInfo[],
         outdated: PackageInfo[],
-        deprecated: PackageInfo[] = []) {
+        deprecated: PackageInfo[] = [],
+        scannedAt?: Date
+    ) {
         this.vulnerable = vulnerable;
         this.outdated = outdated;
         this.deprecated = deprecated;
-        this.scannedAt = new Date();
+        this.scannedAt = scannedAt ?? new Date();
     }
 
     static getVulnerable(): PackageInfo[] {

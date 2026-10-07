@@ -45,6 +45,15 @@ export class PackageHubTreeProvider
         const deprecated = ScanState.getDeprecated();
         const conflicts = ScanState.getVersionConflicts();
 
+        if (!element && !ScanState.getScannedAt()) {
+            return Promise.resolve([
+                new PackageHubTreeItem("Scan Now", vscode.TreeItemCollapsibleState.None, {
+                    command: "packageHub.scanWorkspace",
+                    title: "Scan Workspace",
+                }),
+            ]);
+        }
+
         if (!element) {
             return Promise.resolve([
                 new PackageHubTreeItem(
@@ -109,7 +118,7 @@ export class PackageHubTreeProvider
                             p.id,
                             vscode.TreeItemCollapsibleState.None,
                             undefined,
-                            `${p.version}${p.severity ? " · " + p.severity : ""}`,
+                            `${packageVersionText(p.id, p.version)}${p.severity ? " · " + p.severity : ""}`,
                             p.id,
                             p.latestVersion
                         )
@@ -131,7 +140,7 @@ export class PackageHubTreeProvider
                             p.id,
                             vscode.TreeItemCollapsibleState.None,
                             undefined,
-                            `${p.version} → ${p.latestVersion || "?"}`,
+                            `${packageVersionText(p.id, p.version)} → ${p.latestVersion || "?"}`,
                             p.id,
                             p.latestVersion
                         )
@@ -156,7 +165,7 @@ export class PackageHubTreeProvider
                             p.id,
                             vscode.TreeItemCollapsibleState.None,
                             undefined,
-                            p.version,
+                            packageVersionText(p.id, p.version),
                             p.id,
                             p.latestVersion
                         )
@@ -197,6 +206,10 @@ export class PackageHubTreeProvider
                     command: "packageHub.showHealthDashboard",
                     title: "Open Dashboard",
                 }),
+                new PackageHubTreeItem("Copy Health Report", vscode.TreeItemCollapsibleState.None, {
+                    command: "packageHub.copyHealthReport",
+                    title: "Copy Health Report",
+                }),
                 new PackageHubTreeItem("Restore All", vscode.TreeItemCollapsibleState.None, {
                     command: "packageHub.restoreAll",
                     title: "Restore All",
@@ -210,4 +223,13 @@ export class PackageHubTreeProvider
 
         return Promise.resolve([]);
     }
+}
+
+function packageVersionText(id: string, version: string | undefined): string {
+    const central = ScanState.getCentralVersion(id);
+    if (central) {
+        return `CPM ${central}`;
+    }
+
+    return version || "";
 }
