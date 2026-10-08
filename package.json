@@ -61,7 +61,7 @@
       },
       {
         "command": "packageHub.showDependencyGraph",
-        "title": "PackageHub: Show Dependency Graph"
+        "title": "PackageHub: Dependencies"
       },
       {
         "command": "packageHub.copyHealthReport",
@@ -159,16 +159,26 @@
           "group": "packageHub@4"
         },
         {
-          "command": "packageHub.whyPackage",
+          "command": "packageHub.showDependencyGraph",
           "when": "view == packageHubExplorer && viewItem == packageHub.package",
           "group": "packageHub@5"
+        },
+        {
+          "command": "packageHub.whyPackage",
+          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "group": "packageHub@6"
         }
       ],
       "editor/context": [
         {
-          "command": "packageHub.whyPackage",
+          "command": "packageHub.showDependencyGraph",
           "when": "resourceExtname == .csproj || resourceExtname == .props",
           "group": "packageHub@1"
+        },
+        {
+          "command": "packageHub.whyPackage",
+          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "group": "packageHub@2"
         }
       ]
     }

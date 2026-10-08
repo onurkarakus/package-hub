@@ -81,17 +81,20 @@ export function buildPackageGraph(
         const libraries = asRecord(targets[tfm]) || {};
         for (const key of Object.keys(libraries)) {
             const library = asRecord(libraries[key]) || {};
-            if (stringValue(library.type) === "project") {
-                continue;
-            }
-
             const parsed = parseLibraryKey(key);
             if (!parsed) {
                 continue;
             }
 
-            const fromId = packageNodeId(parsed.id, parsed.version);
-            ensurePackage(nodes, fromId, parsed.id, parsed.version);
+            const isProject = stringValue(library.type) === "project";
+            const fromId = isProject
+                ? projectNodeId(parsed.id)
+                : packageNodeId(parsed.id, parsed.version);
+            if (isProject) {
+                ensureProject(nodes, fromId, parsed.id);
+            } else {
+                ensurePackage(nodes, fromId, parsed.id, parsed.version);
+            }
 
             const dependencies = asRecord(library.dependencies) || {};
             for (const dependencyId of Object.keys(dependencies)) {
@@ -114,6 +117,9 @@ export function buildPackageGraph(
         for (const dependencyId of Object.keys(dependencies)) {
             const dependency = asRecord(dependencies[dependencyId]) || {};
             if (stringValue(dependency.target) === "Project") {
+                const toId = projectNodeId(dependencyId);
+                ensureProject(nodes, toId, dependencyId);
+                edges.add(`${projectId}\n${toId}`);
                 continue;
             }
 
@@ -125,6 +131,22 @@ export function buildPackageGraph(
             };
             const toId = packageNodeId(parsed.id, parsed.version);
             ensurePackage(nodes, toId, parsed.id, parsed.version);
+            edges.add(`${projectId}\n${toId}`);
+        }
+    }
+
+    const restoreFrameworks = asRecord(restore?.frameworks) || {};
+    for (const tfm of Object.keys(restoreFrameworks)) {
+        const framework = asRecord(restoreFrameworks[tfm]) || {};
+        const references = asRecord(framework.projectReferences) || {};
+        for (const referencePath of Object.keys(references)) {
+            const name = path.basename(referencePath, ".csproj");
+            if (!name || name.toLowerCase() === projectName.toLowerCase()) {
+                continue;
+            }
+
+            const toId = projectNodeId(name);
+            ensureProject(nodes, toId, name);
             edges.add(`${projectId}\n${toId}`);
         }
     }
@@ -181,6 +203,64 @@ export function formatWhyTree(graph: PackageGraph, packageIds: string[]): string
     }
 
     return [root.label, ...renderBranches(root.children, "")].join("\n");
+}
+
+export function formatNodePath(graphs: PackageGraph[], packageId: string): string {
+    const toRoot: string[] = [];
+    const dependsOn = new Set<string>();
+    const dependents = new Set<string>();
+
+    for (const graph of graphs) {
+        if (!graph.error) {
+            const path = formatWhyTree(graph, [packageId]);
+            if (path !== "Kenar yok. Uydurulmadı.") {
+                toRoot.push(path);
+            }
+        }
+
+        const node = graph.nodes.find((item) =>
+            packageIdOf(item.id)?.toLowerCase() === packageId.toLowerCase()
+        );
+        if (!node) {
+            continue;
+        }
+
+        for (const edge of graph.edges) {
+            if (edge.from === node.id) {
+                const target = graph.nodes.find((item) => item.id === edge.to);
+                if (target) {
+                    dependsOn.add(displayLabel(target));
+                }
+            }
+            if (edge.to === node.id) {
+                const source = graph.nodes.find((item) => item.id === edge.from);
+                if (source) {
+                    dependents.add(source.label);
+                }
+            }
+        }
+    }
+
+    const depends = dependsOn.size === 0
+        ? "Bağımlılığı yok."
+        : Array.from(dependsOn).sort().join("\n");
+    const usedBy = dependents.size === 0
+        ? "Bağımlı yok."
+        : Array.from(dependents).sort().join("\n");
+    const roots = toRoot.length === 0
+        ? "Kenar yok. Uydurulmadı."
+        : toRoot.join("\n\n");
+
+    return [
+        "To root",
+        roots,
+        "",
+        "What does this depend on?",
+        depends,
+        "",
+        "What depends on this?",
+        usedBy,
+    ].join("\n");
 }
 
 interface TreeBranch {
@@ -268,6 +348,16 @@ function shortestPath(
 
 function displayLabel(node: GraphNode): string {
     return node.severity ? `${node.label} · ${node.severity}` : node.label;
+}
+
+function projectNodeId(name: string): string {
+    return `project:${name}`;
+}
+
+function ensureProject(nodes: Map<string, GraphNode>, id: string, name: string) {
+    if (!nodes.has(id)) {
+        nodes.set(id, { id, label: name, type: "project" });
+    }
 }
 
 function ensurePackage(nodes: Map<string, GraphNode>, id: string, packageId: string, version: string) {

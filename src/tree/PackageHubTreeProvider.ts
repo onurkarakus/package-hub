@@ -1,5 +1,8 @@
+import * as fs from "fs/promises";
 import * as vscode from "vscode";
 import { ScanState } from "../services/ScanState";
+import { WorkspaceScanner } from "../services/WorkspaceScanner";
+import { readPackageRef } from "../utils/nugetAudit";
 import { deprecate } from "node:util";
 
 export class PackageHubTreeItem extends vscode.TreeItem {
@@ -9,7 +12,8 @@ export class PackageHubTreeItem extends vscode.TreeItem {
         public readonly command?: vscode.Command,
         description?: string,
         public readonly packageId?: string,
-        public readonly latestVersion?: string
+        public readonly latestVersion?: string,
+        public readonly projectPath?: string
     ) {
         super(label, collapsibleState);
 
@@ -77,10 +81,22 @@ export class PackageHubTreeProvider
                     vscode.TreeItemCollapsibleState.Collapsed
                 ),
                 new PackageHubTreeItem(
+                    "Projects",
+                    vscode.TreeItemCollapsibleState.Collapsed
+                ),
+                new PackageHubTreeItem(
                     "Actions",
                     vscode.TreeItemCollapsibleState.Expanded
                 ),
             ]);
+        }
+
+        if (element.projectPath) {
+            return packagesForProject(element.projectPath);
+        }
+
+        if (element.label === "Projects") {
+            return projectNodes();
         }
 
         if (element.label === "Summary") {
@@ -214,15 +230,142 @@ export class PackageHubTreeProvider
                     command: "packageHub.restoreAll",
                     title: "Restore All",
                 }),
-                new PackageHubTreeItem("Open Graph", vscode.TreeItemCollapsibleState.None, {
-                    command: "packageHub.showDependencyGraph",
-                    title: "Open Graph",
-                }),
             ]);
         }
 
         return Promise.resolve([]);
     }
+}
+
+async function projectNodes(): Promise<PackageHubTreeItem[]> {
+    const scanner = new WorkspaceScanner();
+    const projects = await scanner.findProjects();
+    projects.sort((left, right) =>
+        scanner.getProjectName(left).localeCompare(scanner.getProjectName(right))
+    );
+
+    if (projects.length === 0) {
+        return [
+            new PackageHubTreeItem("No projects", vscode.TreeItemCollapsibleState.None),
+        ];
+    }
+
+    return projects.map(
+        (project) =>
+            new PackageHubTreeItem(
+                scanner.getProjectName(project),
+                vscode.TreeItemCollapsibleState.Collapsed,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                project.fsPath
+            )
+    );
+}
+
+async function packagesForProject(projectPath: string): Promise<PackageHubTreeItem[]> {
+    let text = "";
+    try {
+        text = await fs.readFile(projectPath, "utf8");
+    } catch {
+        return [
+            new PackageHubTreeItem("csproj okunamadı.", vscode.TreeItemCollapsibleState.None),
+        ];
+    }
+
+    const packages = new Map<string, { id: string; version?: string }>();
+    for (const line of text.split(/\r?\n/)) {
+        const ref = readPackageRef(line);
+        if (!ref || ref.kind !== "reference") {
+            continue;
+        }
+        const key = ref.id.toLowerCase();
+        if (packages.has(key)) {
+            continue;
+        }
+        packages.set(key, {
+            id: ref.id,
+            version: ref.version || ScanState.getCentralVersion(ref.id),
+        });
+    }
+
+    const list = Array.from(packages.values()).sort((left, right) => {
+        const rank = packageRank(left.id) - packageRank(right.id);
+        return rank || left.id.localeCompare(right.id);
+    });
+
+    if (list.length === 0) {
+        return [
+            new PackageHubTreeItem("No packages", vscode.TreeItemCollapsibleState.None),
+        ];
+    }
+
+    return list.map((pkg) => projectPackageItem(pkg.id, pkg.version));
+}
+
+function packageRank(id: string): number {
+    const found = ScanState.findPackage(id);
+    if (found.vulnerable) {
+        return 0;
+    }
+    if (found.outdated) {
+        return 1;
+    }
+    if (found.deprecated) {
+        return 2;
+    }
+    return 3;
+}
+
+function projectPackageItem(id: string, version: string | undefined): PackageHubTreeItem {
+    const found = ScanState.findPackage(id);
+    const shown = packageVersionText(id, version);
+
+    if (found.vulnerable) {
+        return new PackageHubTreeItem(
+            id,
+            vscode.TreeItemCollapsibleState.None,
+            undefined,
+            `${shown}${found.vulnerable.severity ? " · " + found.vulnerable.severity : ""}`,
+            id,
+            found.vulnerable.latestVersion
+        );
+    }
+
+    if (found.outdated) {
+        return new PackageHubTreeItem(
+            id,
+            vscode.TreeItemCollapsibleState.None,
+            undefined,
+            `${shown} → ${found.outdated.latestVersion || "?"}`,
+            id,
+            found.outdated.latestVersion
+        );
+    }
+
+    if (found.deprecated) {
+        return new PackageHubTreeItem(
+            id,
+            vscode.TreeItemCollapsibleState.None,
+            undefined,
+            shown,
+            id,
+            found.deprecated.latestVersion
+        );
+    }
+
+    return new PackageHubTreeItem(
+        id,
+        vscode.TreeItemCollapsibleState.None,
+        {
+            command: "packageHub.showPackageInfo",
+            title: "Show Package Info",
+            arguments: [{ packageId: id, version }],
+        },
+        shown,
+        id
+    );
 }
 
 function packageVersionText(id: string, version: string | undefined): string {

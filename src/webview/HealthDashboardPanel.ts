@@ -1,10 +1,36 @@
 import * as vscode from "vscode";
 import { ScanState } from "../services/ScanState";
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeJs(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r?\n/g, " ");
+}
+
+function packageNameButton(id: string): string {
+  return `<button type="button" class="pkg-link" onclick="showDependencies('${escapeJs(id)}', event)">${escapeHtml(id)}</button>`;
+}
+
+function normalizeSeverity(value: unknown): string {
+  const text = typeof value === "string" ? value.toLowerCase() : "all";
+  return ["all", "critical", "high", "moderate", "low"].includes(text) ? text : "all";
+}
+
 export class HealthDashboardPanel {
   public static currentPanel: HealthDashboardPanel | undefined;
   private readonly _panel: vscode.WebviewPanel;
   private _disposables: vscode.Disposable[] = [];
+  private query = "";
+  private severity = "all";
 
   private constructor(panel: vscode.WebviewPanel) {
     this._panel = panel;
@@ -30,7 +56,11 @@ export class HealthDashboardPanel {
               vscode.commands.executeCommand("packageHub.updateHighestMinor");
             }
             break;
+          case "filter":
+            this.rememberFilter(message);
+            break;
           case "setViewMode":
+            this.rememberFilter(message);
             vscode.workspace
               .getConfiguration("packageHub")
               .update(
@@ -41,6 +71,13 @@ export class HealthDashboardPanel {
               .then(() => {
                 this._update();
               });
+            break;
+          case "showDependencies":
+            if (message.packageId) {
+              vscode.commands.executeCommand("packageHub.showDependencyGraph", {
+                packageId: message.packageId,
+              });
+            }
             break;
         }
       },
@@ -81,6 +118,15 @@ export class HealthDashboardPanel {
     }
   }
 
+  private rememberFilter(message: { query?: unknown; severity?: unknown }) {
+    if (typeof message.query === "string") {
+      this.query = message.query;
+    }
+    if (typeof message.severity === "string") {
+      this.severity = normalizeSeverity(message.severity);
+    }
+  }
+
   private _update() {
     const vulnerable = ScanState.getVulnerable();
     const outdated = ScanState.getOutDated();
@@ -114,6 +160,16 @@ export class HealthDashboardPanel {
       vscode.workspace
         .getConfiguration("packageHub")
         .get<string>("dashboardViewMode") || "list";
+    const query = this.query;
+    const severity = this.severity;
+    const severityById = new Map<string, string>();
+    for (const pkg of [...vulnerable, ...outdated, ...deprecated]) {
+      if (pkg.severity && !severityById.has(String(pkg.id).toLowerCase())) {
+        severityById.set(String(pkg.id).toLowerCase(), String(pkg.severity));
+      }
+    }
+    const packageSeverity = (pkg: { id?: string; severity?: string }) =>
+      String(pkg.severity || severityById.get(String(pkg.id || "").toLowerCase()) || "").toLowerCase();
 
     const createRows = (
       packages: any[],
@@ -147,9 +203,9 @@ export class HealthDashboardPanel {
             : "";
 
           return `
-        <tr>
+        <tr data-package-id="${escapeHtml(p.id)}" data-severity="${escapeHtml(packageSeverity(p))}">
           <td>
-            <strong>${p.id}</strong>
+            ${packageNameButton(p.id)}
             <span class="badge ${badgeClass}">${badgeText}</span>
           </td>
           <td>${p.version}</td>
@@ -189,9 +245,13 @@ export class HealthDashboardPanel {
           version: p.version,
           latestVersion: p.latestVersion,
           kind: p.kind,
+          severity: p.severity,
           projects: [...(p.projects || [])],
         };
       } else {
+        if (!byPackage[key].severity && p.severity) {
+          byPackage[key].severity = p.severity;
+        }
         for (const proj of p.projects || []) {
           if (!byPackage[key].projects.includes(proj)) {
             byPackage[key].projects.push(proj);
@@ -228,9 +288,9 @@ export class HealthDashboardPanel {
               .join("");
 
             return `
-          <details open>
+          <details open data-package-id="${escapeHtml(c.id)}" data-severity="${escapeHtml(packageSeverity({ id: c.id }))}">
             <summary>
-              <strong>${c.id}</strong> (${c.versions.length} farklı versiyon)
+              ${packageNameButton(c.id)} (${c.versions.length} farklı versiyon)
                 ${alignBtn}
               </summary>
               <table>
@@ -244,7 +304,7 @@ export class HealthDashboardPanel {
           .join("");
 
     const listHtml = `
-      <details open>
+      <details class="filter-group" open>
         <summary><strong>Vulnerable Packages</strong> (${vulnerableCount})</summary>
         <table>
           <thead>
@@ -263,7 +323,7 @@ export class HealthDashboardPanel {
         </table>
       </details>
 
-      <details open>
+      <details class="filter-group" open>
         <summary><strong>Outdated Packages</strong> (${outdatedCount})</summary>
         <table>
           <thead>
@@ -281,7 +341,7 @@ export class HealthDashboardPanel {
     )}</tbody>
         </table>
       </details>
-      <details open>
+      <details class="filter-group" open>
       <summary><strong>Deprecated Packages</strong> (${deprecatedCount})</summary>
         <table>
           <thead>
@@ -299,7 +359,7 @@ export class HealthDashboardPanel {
     )}</tbody>
         </table>
       </details>
-      <details open>
+      <details class="filter-group" open>
       <summary><strong>Version Conflicts</strong> (${conflictCount})</summary>
         ${conflictHtml}
       </details>
@@ -310,7 +370,7 @@ export class HealthDashboardPanel {
       .map((projectName) => {
         const rows = createRows(byProject[projectName], "outdated");
         return `
-          <details open>
+          <details class="filter-group" open>
             <summary><strong>${projectName}</strong> (${byProject[projectName].length})</summary>
             <table>
               <thead>
@@ -342,9 +402,9 @@ export class HealthDashboardPanel {
           : "";
 
         return `
-          <details open>
+          <details class="filter-group" open data-package-id="${escapeHtml(p.id)}" data-severity="${escapeHtml(packageSeverity(p))}">
             <summary>
-              <strong>${p.id}</strong>
+              ${packageNameButton(p.id)}
               <span class="badge ${p.kind === "vulnerable"
             ? "badge-vuln"
             : p.kind === "deprecated"
@@ -423,6 +483,21 @@ export class HealthDashboardPanel {
     .row-btn:hover {
       background: var(--vscode-button-hoverBackground);
     }
+    button.pkg-link {
+      background: transparent;
+      color: var(--vscode-textLink-foreground);
+      border: none;
+      padding: 0;
+      margin: 0;
+      border-radius: 0;
+      font-size: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.pkg-link:hover {
+      background: transparent;
+      text-decoration: underline;
+    }
     .badge {
       display: inline-block;
       margin-left: 8px;
@@ -485,6 +560,24 @@ export class HealthDashboardPanel {
       cursor: pointer;
       margin-bottom: 8px;
     }
+    .filters {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .filters input,
+    .filters select {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+      font-family: var(--vscode-font-family);
+      font-size: 0.9rem;
+      padding: 4px 8px;
+    }
+    .filters input { min-width: 220px; }
+    .hidden { display: none; }
+    .filter-empty { opacity: 0.6; margin: 8px 0 16px; }
   </style>
 </head>
 <body>
@@ -527,6 +620,17 @@ export class HealthDashboardPanel {
     <button onclick="safeUpdate('minor')">Highest minor</button>
   </div>
 
+  <div class="filters">
+    <input id="pkg-search" type="search" placeholder="Package id" value="${escapeHtml(query)}" />
+    <select id="pkg-severity">
+      <option value="all"${severity === "all" ? " selected" : ""}>All</option>
+      <option value="critical"${severity === "critical" ? " selected" : ""}>Critical</option>
+      <option value="high"${severity === "high" ? " selected" : ""}>High</option>
+      <option value="moderate"${severity === "moderate" ? " selected" : ""}>Moderate</option>
+      <option value="low"${severity === "low" ? " selected" : ""}>Low</option>
+    </select>
+  </div>
+
   <div class="view-switch">
     <button class="${viewMode === "list" ? "active" : ""}" onclick="setViewMode('list')">Liste</button>
     <button class="${viewMode === "byProject" ? "active" : ""}" onclick="setViewMode('byProject')">Proje bazlı</button>
@@ -534,6 +638,7 @@ export class HealthDashboardPanel {
   </div>
 
   ${contentHtml}
+  <p id="filter-empty" class="filter-empty hidden">no packages</p>
 
   <script>
     const vscode = acquireVsCodeApi();
@@ -550,13 +655,84 @@ export class HealthDashboardPanel {
       });
     }
 
+    function showDependencies(packageId, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      vscode.postMessage({
+        command: "showDependencies",
+        packageId: packageId
+      });
+    }
+
     function safeUpdate(channel) {
       vscode.postMessage({ command: "safeUpdate", channel: channel });
     }
 
     function setViewMode(mode) {
-      vscode.postMessage({ command: "setViewMode", mode: mode });
+      vscode.postMessage({
+        command: "setViewMode",
+        mode: mode,
+        query: document.getElementById("pkg-search").value,
+        severity: document.getElementById("pkg-severity").value
+      });
     }
+
+    function publishFilter() {
+      vscode.postMessage({
+        command: "filter",
+        query: document.getElementById("pkg-search").value,
+        severity: document.getElementById("pkg-severity").value
+      });
+    }
+
+    function applyFilter() {
+      const q = document.getElementById("pkg-search").value.trim().toLowerCase();
+      const sev = document.getElementById("pkg-severity").value;
+      const filtering = q.length > 0 || sev !== "all";
+      document.querySelectorAll("[data-package-id]").forEach((el) => {
+        const id = (el.getAttribute("data-package-id") || "").toLowerCase();
+        const itemSev = (el.getAttribute("data-severity") || "").toLowerCase();
+        const ok = (!q || id.includes(q)) && (sev === "all" || itemSev === sev);
+        el.classList.toggle("hidden", filtering && !ok);
+      });
+      let any = false;
+      document.querySelectorAll(".filter-group").forEach((group) => {
+        const own = group.matches("[data-package-id]") ? [group] : [];
+        const items = own.concat(Array.from(group.querySelectorAll("[data-package-id]")));
+        if (!filtering) {
+          group.classList.remove("hidden");
+          return;
+        }
+        if (items.length === 0) {
+          group.classList.add("hidden");
+          return;
+        }
+        const visible = items.some((el) => !el.classList.contains("hidden"));
+        if (!group.matches("[data-package-id]")) {
+          group.classList.toggle("hidden", !visible);
+        }
+        if (visible) {
+          any = true;
+        }
+      });
+      const empty = document.getElementById("filter-empty");
+      const hasPackages = document.querySelector("[data-package-id]") !== null;
+      if (empty) {
+        empty.classList.toggle("hidden", !filtering || !hasPackages || any);
+      }
+    }
+
+    document.getElementById("pkg-search").addEventListener("input", () => {
+      applyFilter();
+      publishFilter();
+    });
+    document.getElementById("pkg-severity").addEventListener("change", () => {
+      applyFilter();
+      publishFilter();
+    });
+    applyFilter();
   </script>
   <footer style="margin-top: 24px; opacity: 0.7; font-size: 0.85rem;">
      <p style="opacity:0.7; font-size:0.85rem;">

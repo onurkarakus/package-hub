@@ -5,6 +5,21 @@ import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { readPackageRef } from "../utils/nugetAudit";
 import { PackageCodeActionProvider } from "./PackageCodeActionProvider";
 
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+function sentence(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return "";
+    }
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 export class PackageHoverProvider implements vscode.HoverProvider {
     constructor(
         private readonly versions: PackageCodeActionProvider,
@@ -42,61 +57,64 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         md.isTrusted = true;
         md.supportHtml = true;
 
-        md.appendMarkdown(`### ${explanation.title}\n\n`);
-        md.appendMarkdown(
-            `**Current Version:** \`${currentVersion || "unknown"}\`${usesCentral ? " · CPM" : ""}\n\n`
-        );
+        const lines: string[] = [];
+        const versionText = `\`${escapeHtml(currentVersion || "unknown")}\`${usesCentral ? " · CPM" : ""}`;
+        const header = [`**${escapeHtml(explanation.title)}**`];
+        if (explanation.severity) {
+            header.push(escapeHtml(explanation.severity));
+        }
+        header.push(versionText);
+        lines.push(header.join(" · "));
+
+        const notes = [sentence(explanation.reason)];
         if (usesCentral && centralVersion) {
-            md.appendMarkdown(`Version is read from Directory.Packages.props.\n\n`);
+            notes.push("Version is read from Directory.Packages.props.");
         }
         if (usesCentral && !centralVersion) {
-            md.appendMarkdown(`No PackageVersion entry. No version was invented.\n\n`);
+            notes.push("No PackageVersion entry. No version was invented.");
         }
+        if (!explanation.isVulnerable && !explanation.isDeprecated && !explanation.isOutdated) {
+            notes.push("Run PackageHub: Scan Workspace for the latest data.");
+        }
+        lines.push(notes.join(" "));
 
-        if (explanation.isVulnerable) {
-            md.appendMarkdown(`---\n\n`);
-            md.appendMarkdown(`### ${explanation.reason}\n\n`);
-            md.appendMarkdown(`**Severity:** \`${explanation.severity}\`\n\n`);
-            await this.appendTargets(md, document, packageId, currentVersion, true);
-            if (explanation.advisoryUrl) {
-                md.appendMarkdown(`[Open Advisory](${explanation.advisoryUrl})`);
-            }
-        } else if (explanation.isDeprecated) {
-            md.appendMarkdown(`---\n\n`);
-            md.appendMarkdown(`### ${explanation.reason}\n\n`);
-            await this.appendTargets(md, document, packageId, currentVersion, false);
-        } else if (explanation.isOutdated) {
-            md.appendMarkdown(`---\n\n`);
-            md.appendMarkdown(`### ${explanation.reason}\n\n`);
-            const wrote = await this.appendTargets(md, document, packageId, currentVersion, false);
-            if (!wrote && explanation.recommendedVersion) {
-                md.appendMarkdown(`**Latest:** \`${explanation.recommendedVersion}\`\n\n`);
-                md.appendMarkdown(this.updateLink(
+        const links: string[] = [];
+        if (explanation.isVulnerable || explanation.isDeprecated || explanation.isOutdated) {
+            const wrote = await this.appendTargets(
+                lines,
+                links,
+                document,
+                packageId,
+                currentVersion,
+                explanation.isVulnerable
+            );
+            if (!wrote && explanation.isOutdated && explanation.recommendedVersion) {
+                lines.push(`Latest \`${escapeHtml(explanation.recommendedVersion)}\``);
+                links.push(this.updateLink(
                     `Update to latest ${explanation.recommendedVersion}`,
                     packageId,
                     explanation.recommendedVersion,
                     this.projectName(document)
                 ));
             }
-        } else {
-            md.appendMarkdown(`---\n\n`);
-            md.appendMarkdown(`${explanation.reason}\n\n`);
-            md.appendMarkdown(`*Run **PackageHub: Scan Workspace** for the latest data.*`);
         }
-
-        md.appendMarkdown(`\n\n---\n`);
-        md.appendMarkdown(`[Scan Workspace](command:packageHub.scanWorkspace)`);
-        md.appendMarkdown(
-            `\n\n[Ignore](command:packageHub.ignorePackage?${encodeURIComponent(
-                JSON.stringify(packageId)
-            )})`
+        if (explanation.advisoryUrl) {
+            links.push(`[Open Advisory](${explanation.advisoryUrl})`);
+        }
+        links.push(
+            this.whyLink(packageId, this.projectName(document)),
+            `[Scan Workspace](command:packageHub.scanWorkspace)`,
+            `[Ignore](command:packageHub.ignorePackage?${encodeURIComponent(JSON.stringify(packageId))})`
         );
+        lines.push(...links);
 
+        md.appendMarkdown(lines.join("<br>"));
         return new vscode.Hover(md);
     }
 
     private async appendTargets(
-        md: vscode.MarkdownString,
+        lines: string[],
+        links: string[],
         document: vscode.TextDocument,
         packageId: string,
         currentVersion: string | undefined,
@@ -105,31 +123,32 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         const peek = await this.versions.peekUpdateTargets(document, packageId, currentVersion);
         if (!peek.ready) {
             if (vulnerable) {
-                md.appendMarkdown(
-                    `Updates stay on the lightbulb: highest patch, then latest. This hover does not pick a version until that list is ready.\n\n`
+                lines.push(
+                    "Updates stay on the lightbulb: highest patch, then latest. This hover does not pick a version until that list is ready."
                 );
             }
             return false;
         }
 
+        const versions: string[] = [];
         if (peek.patch) {
-            md.appendMarkdown(`**Highest patch:** \`${peek.patch}\`\n\n`);
+            versions.push(`Highest patch \`${escapeHtml(peek.patch)}\``);
         }
         if (peek.latest) {
-            md.appendMarkdown(`**Latest:** \`${peek.latest}\`\n\n`);
+            versions.push(`Latest \`${escapeHtml(peek.latest)}\``);
+        }
+        if (versions.length > 0) {
+            lines.push(versions.join(" · "));
         }
         if (vulnerable && peek.patch) {
-            md.appendMarkdown(
-                `Highest patch stays in the same major. This window does not claim that version closes the advisory.\n\n`
-            );
+            lines.push("Highest patch stays in the same major. This window does not claim that version closes the advisory.");
         }
         if (!peek.patch && !peek.latest) {
-            md.appendMarkdown(`No newer patch or latest version. Update was not started.\n\n`);
+            lines.push("No newer patch or latest version. Update was not started.");
             return true;
         }
 
         const projectName = this.projectName(document);
-        const links: string[] = [];
         if (peek.patch) {
             links.push(this.updateLink(
                 `Update to highest patch ${peek.patch}`,
@@ -146,7 +165,6 @@ export class PackageHoverProvider implements vscode.HoverProvider {
                 projectName
             ));
         }
-        md.appendMarkdown(`${links.join("  |  ")}\n\n`);
         return true;
     }
 
@@ -154,6 +172,11 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         return document.fileName.toLowerCase().endsWith(".csproj")
             ? this.scanner.getProjectName(document.uri)
             : undefined;
+    }
+
+    private whyLink(packageId: string, projectName?: string): string {
+        const args = projectName ? { packageId, projectName } : { packageId };
+        return `[Why is this here?](command:packageHub.whyPackage?${encodeURIComponent(JSON.stringify(args))})`;
     }
 
     private updateLink(

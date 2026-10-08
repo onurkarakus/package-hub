@@ -880,10 +880,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const { vulnerable, outdated, deprecated } = ScanState.findPackage(item.packageId);
 			const info = vulnerable || outdated || deprecated;
+			const version = info?.version || (typeof item.version === "string" ? item.version : undefined);
 
 			const lines = [
 				`Paket: ${item.packageId}`,
-				info?.version ? `Mevcut: ${info.version}` : undefined,
+				version ? `Mevcut: ${version}` : undefined,
 				info?.latestVersion ? `Son sürüm: ${info.latestVersion}` : undefined,
 				info?.severity ? `Severity: ${info.severity}` : undefined,
 				info?.projects?.length ? `Projeler: ${info.projects.join(", ")}` : undefined,
@@ -969,8 +970,23 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const showGraphCommand = vscode.commands.registerCommand(
 		"packageHub.showDependencyGraph",
-		() => {
-			DependencyGraphPanel.createOrShow();
+		async (args?: { packageId?: string }) => {
+			let packageId = typeof args?.packageId === "string" ? args.packageId.trim() : "";
+			if (!packageId) {
+				const editor = vscode.window.activeTextEditor;
+				if (editor) {
+					packageId = readPackageRef(
+						editor.document.lineAt(editor.selection.active.line).text
+					)?.id || "";
+				}
+			}
+
+			if (!packageId) {
+				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				return;
+			}
+
+			await DependencyGraphPanel.show(packageId);
 		}
 	);
 
@@ -1050,15 +1066,14 @@ export function activate(context: vscode.ExtensionContext) {
 						logger.show(true);
 						logger.info(`Why: ${packageId} (${selectedProject})`);
 						logger.appendLine(text);
-						DependencyGraphPanel.showWhy(packageId, text);
+						await DependencyGraphPanel.show(packageId);
 						vscode.window.showInformationMessage(
-							`${packageId} kartı PackageHub Dependency Graph sekmesinde açıldı. Aynı metin Output kanalında.`
+							`${packageId} yolu açıldı. CLI metni Output kanalında.`
 						);
 					} catch (error: any) {
 						const message = error.message || String(error);
 						logger.show(true);
 						logger.error(`Why başarısız: ${message}`);
-						DependencyGraphPanel.showWhy(packageId, message);
 						vscode.window.showErrorMessage(message);
 					}
 				}
