@@ -2,6 +2,18 @@ export const AUDIT_CODES = ["NU1901", "NU1902", "NU1903", "NU1904"] as const;
 
 export type AuditCode = (typeof AUDIT_CODES)[number];
 
+const SEVERITY_RANK = ["low", "moderate", "high", "critical"];
+
+export function meetsMinimumSeverity(severity: string | undefined, minimum: string | undefined): boolean {
+    const floor = SEVERITY_RANK.indexOf((minimum || "low").toLowerCase());
+    const rank = SEVERITY_RANK.indexOf((severity || "").toLowerCase());
+    if (floor < 0 || rank < 0) {
+        return true;
+    }
+
+    return rank >= floor;
+}
+
 export function auditCodeForSeverity(severity?: string): AuditCode {
     switch ((severity || "").toLowerCase()) {
         case "low":
@@ -122,6 +134,111 @@ function versionParts(value: string): number[] {
         const numeric = parseInt(part, 10);
         return Number.isFinite(numeric) ? numeric : 0;
     });
+}
+
+export function exclusiveUpperBound(range: string): string | undefined {
+    const text = range.trim();
+    if (!text || text.includes("*") || !text.endsWith(")")) {
+        return undefined;
+    }
+
+    if (!text.startsWith("[") && !text.startsWith("(")) {
+        return undefined;
+    }
+
+    const body = text.slice(1, -1).trim();
+    if (!body.includes(",")) {
+        return undefined;
+    }
+
+    const max = body.slice(body.indexOf(",") + 1).trim();
+    if (!max || !/^\d+(\.\d+)*(-[0-9A-Za-z.-]+)?$/.test(max)) {
+        return undefined;
+    }
+
+    return max;
+}
+
+export function firstFixedFromRanges(ranges: string[], current?: string): string | undefined {
+    if (ranges.length === 0) {
+        return undefined;
+    }
+
+    const bounds: string[] = [];
+    for (const range of ranges) {
+        const upper = exclusiveUpperBound(range);
+        if (!upper || versionInsideRange(upper, range) !== false) {
+            return undefined;
+        }
+        bounds.push(upper);
+    }
+
+    bounds.sort((left, right) => compareNuGetVersions(left, right));
+    for (const candidate of bounds) {
+        if (current && compareNuGetVersions(candidate, current) <= 0) {
+            continue;
+        }
+
+        const outside = ranges.every((range) => versionInsideRange(candidate, range) === false);
+        if (outside) {
+            return candidate;
+        }
+    }
+
+    return undefined;
+}
+
+export function sameNuGetVersion(left: string | undefined, right: string | undefined): boolean {
+    return !!left && !!right && compareNuGetVersions(left, right) === 0;
+}
+
+export function versionInsideRange(version: string, range: string): boolean | undefined {
+    const text = range.trim();
+    if (!text || text.includes("*")) {
+        return undefined;
+    }
+
+    if (text.startsWith("[") || text.startsWith("(")) {
+        if (!text.endsWith("]") && !text.endsWith(")")) {
+            return undefined;
+        }
+
+        const minInclusive = text.startsWith("[");
+        const maxInclusive = text.endsWith("]");
+        const body = text.slice(1, -1).trim();
+        if (!body.includes(",")) {
+            if (!minInclusive || !maxInclusive || !body) {
+                return undefined;
+            }
+            return compareNuGetVersions(version, body) === 0;
+        }
+
+        const comma = body.indexOf(",");
+        const min = body.slice(0, comma).trim();
+        const max = body.slice(comma + 1).trim();
+        if (!min && !max) {
+            return undefined;
+        }
+        if (min) {
+            const compared = compareNuGetVersions(version, min);
+            if (minInclusive ? compared < 0 : compared <= 0) {
+                return false;
+            }
+        }
+        if (max) {
+            const compared = compareNuGetVersions(version, max);
+            if (maxInclusive ? compared > 0 : compared >= 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (/\s/.test(text)) {
+        return undefined;
+    }
+
+    return compareNuGetVersions(version, text) >= 0;
 }
 
 export function compareNuGetVersions(left: string, right: string): number {

@@ -170,6 +170,69 @@ export function buildPackageGraph(
     return graph;
 }
 
+export function directReferencer(
+    graph: PackageGraph,
+    packageId: string
+): { known: boolean; inGraph: boolean; broughtBy?: string; broughtByKind?: "package" | "project" } {
+    if (graph.nodes.length === 0) {
+        return { known: false, inGraph: false };
+    }
+
+    const wanted = packageId.toLowerCase();
+    const inGraph = graph.nodes.some((node) => packageIdOf(node.id)?.toLowerCase() === wanted);
+    if (!inGraph) {
+        return { known: true, inGraph: false };
+    }
+
+    const project = graph.nodes.find((node) => node.id === `project:${graph.projectName}`);
+    if (!project) {
+        return { known: true, inGraph: true };
+    }
+
+    const adjacent = new Map<string, string[]>();
+    for (const edge of graph.edges) {
+        const next = adjacent.get(edge.from) || [];
+        next.push(edge.to);
+        adjacent.set(edge.from, next);
+    }
+
+    const parent = new Map<string, string | null>();
+    const queue = [project.id];
+    parent.set(project.id, null);
+
+    while (queue.length > 0) {
+        const current = queue.shift() as string;
+        if (packageIdOf(current)?.toLowerCase() === wanted) {
+            let hop = current;
+            while (parent.get(hop) && parent.get(hop) !== project.id) {
+                hop = parent.get(hop) as string;
+            }
+
+            if (hop === current) {
+                return { known: true, inGraph: true };
+            }
+
+            const node = graph.nodes.find((item) => item.id === hop);
+            const broughtBy = node
+                ? (node.type === "package" ? packageIdOf(node.id) : node.label)
+                : undefined;
+            const broughtByKind = node?.type === "package" || node?.type === "project"
+                ? node.type
+                : undefined;
+            return { known: true, inGraph: true, broughtBy, broughtByKind };
+        }
+
+        for (const next of adjacent.get(current) || []) {
+            if (!parent.has(next)) {
+                parent.set(next, current);
+                queue.push(next);
+            }
+        }
+    }
+
+    return { known: true, inGraph: true };
+}
+
 export function formatWhyTree(graph: PackageGraph, packageIds: string[]): string {
     if (graph.error) {
         return graph.error;

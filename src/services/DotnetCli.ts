@@ -14,7 +14,8 @@ export class DotnetCli {
         command: string,
         cwd: string,
         timeoutMs: number = 60000,
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        failOnError = false
     ): Promise<string> {
         try {
             const { stdout, stderr } = await execAsync(command, {
@@ -45,11 +46,11 @@ export class DotnetCli {
             }
 
             // Exit code != 0 olsa bile JSON gelmişse kullan
-            if (error.stdout && String(error.stdout).trim()) {
+            if (!failOnError && error.stdout && String(error.stdout).trim()) {
                 return String(error.stdout).trim();
             }
 
-            const detail = error.stderr || error.message || String(error);
+            const detail = error.stderr || error.stdout || error.message || String(error);
             throw new Error(`Dotnet komutu başarısız : ${detail}`);
         }
     }
@@ -197,6 +198,17 @@ export class DotnetCli {
         await this.run(command, vscode.workspace.getWorkspaceFolder(vscode.Uri.file(projectPath))?.uri.fsPath || process.cwd());
     }
 
+    async removePackage(projectPath: string, packageId: string): Promise<void> {
+        const command = `dotnet remove "${projectPath}" package "${packageId}"`;
+        await this.run(
+            command,
+            path.dirname(projectPath),
+            60000,
+            undefined,
+            true
+        );
+    }
+
     /**
    * dotnet list package --format json çıktısını PackageInfo[] dizisine çevirir
    * Not: Microsoft zaman zaman JSON formatını değiştirebiliyor.
@@ -287,10 +299,21 @@ export class DotnetCli {
                                 advisoryUrl,
                                 projects: [projectName],
                                 isTransitive: pkg.isTransitive,
+                                transitiveProjects: pkg.isTransitive ? [projectName] : [],
                             });
                         } else {
                             if (!existing.projects.includes(projectName)) {
                                 existing.projects.push(projectName);
+                            }
+                            if (pkg.isTransitive) {
+                                if (!existing.transitiveProjects) {
+                                    existing.transitiveProjects = [];
+                                }
+                                if (!existing.transitiveProjects.includes(projectName)) {
+                                    existing.transitiveProjects.push(projectName);
+                                }
+                            } else {
+                                existing.isTransitive = false;
                             }
                             if (pkg.latestVersion && !existing.latestVersion) {
                                 existing.latestVersion = pkg.latestVersion;

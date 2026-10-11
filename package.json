@@ -69,11 +69,11 @@
       },
       {
         "command": "packageHub.updateHighestPatch",
-        "title": "PackageHub: Update to Highest Patch"
+        "title": "PackageHub: Update All to Highest Patch"
       },
       {
         "command": "packageHub.updateHighestMinor",
-        "title": "PackageHub: Update to Highest Minor"
+        "title": "PackageHub: Update All to Highest Minor"
       },
       {
         "command": "packageHub.whyPackage",
@@ -86,6 +86,22 @@
       {
         "command": "packageHub.unignorePackage",
         "title": "PackageHub: Unignore Package"
+      },
+      {
+        "command": "packageHub.removePackage",
+        "title": "PackageHub: Remove Package"
+      },
+      {
+        "command": "packageHub.updateLinePatch",
+        "title": "PackageHub: Update to Highest Patch"
+      },
+      {
+        "command": "packageHub.updateLineLatest",
+        "title": "PackageHub: Update to Latest"
+      },
+      {
+        "command": "packageHub.openLineAdvisory",
+        "title": "PackageHub: Open Advisory"
       }
     ],
     "viewsContainers": {
@@ -124,6 +140,23 @@
             "type": "boolean",
             "default": true,
             "description": "Workspace açılınca otomatik paket taraması yap"
+          },
+          "packageHub.minimumSeverity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "moderate",
+              "high",
+              "critical"
+            ],
+            "default": "low",
+            "description": "PackageHub’un raporladığı en düşük açık seviyesi. Projedeki NuGetAuditLevel değişmez."
+          },
+          "packageHub.minimumReleaseAge": {
+            "type": "number",
+            "default": 0,
+            "minimum": 0,
+            "description": "Latest sürümün tercih edilmesi için en az kaç gün önce yayınlanmış olması. 0 kapalıdır. Highest patch bu kapıya girmez."
           },
           "packageHub.ignoredPackages": {
             "type": "array",
@@ -167,18 +200,43 @@
           "command": "packageHub.whyPackage",
           "when": "view == packageHubExplorer && viewItem == packageHub.package",
           "group": "packageHub@6"
+        },
+        {
+          "command": "packageHub.removePackage",
+          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "group": "packageHub@7"
         }
       ],
       "editor/context": [
         {
-          "command": "packageHub.showDependencyGraph",
+          "command": "packageHub.updateLinePatch",
           "when": "resourceExtname == .csproj || resourceExtname == .props",
           "group": "packageHub@1"
         },
         {
-          "command": "packageHub.whyPackage",
+          "command": "packageHub.updateLineLatest",
           "when": "resourceExtname == .csproj || resourceExtname == .props",
           "group": "packageHub@2"
+        },
+        {
+          "command": "packageHub.openLineAdvisory",
+          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "group": "packageHub@3"
+        },
+        {
+          "command": "packageHub.whyPackage",
+          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "group": "packageHub@4"
+        },
+        {
+          "command": "packageHub.ignorePackage",
+          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "group": "packageHub@5"
+        },
+        {
+          "command": "packageHub.removePackage",
+          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "group": "packageHub@6"
         }
       ]
     }

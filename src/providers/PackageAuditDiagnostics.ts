@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as vscode from "vscode";
-import { PackageInfo } from "../models/PackageInfo";
+import { PackageInfo, TransitiveOrigin } from "../models/PackageInfo";
+import { originForProject } from "../services/TransitiveOrigin";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { logger } from "../utils/logger";
@@ -60,6 +61,37 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         return pkg.projects.some((name) => name.toLowerCase() === projectName.toLowerCase());
     }
 
+    private transitiveInProject(pkg: PackageInfo, projectName: string): boolean {
+        const named = pkg.transitiveProjects || [];
+        if (named.some((name) => name.toLowerCase() === projectName.toLowerCase())) {
+            return true;
+        }
+
+        return pkg.isTransitive && this.packageInProject(pkg, projectName);
+    }
+
+    private lineForBroughtBy(lines: string[], broughtBy: string | undefined): number {
+        if (!broughtBy) {
+            return 0;
+        }
+
+        const needle = broughtBy.toLowerCase();
+        const index = lines.findIndex((line) => {
+            const include = line.match(/Include\s*=\s*"([^"]+)"/i);
+            if (!include) {
+                return false;
+            }
+
+            const value = include[1].toLowerCase();
+            return value === needle
+                || value.endsWith(`/${needle}.csproj`)
+                || value.endsWith(`\\${needle}.csproj`)
+                || value.endsWith(`${needle}.csproj`);
+        });
+
+        return index >= 0 ? index : 0;
+    }
+
     private async diagnosticsForFile(
         uri: vscode.Uri,
         vulnerable: PackageInfo[]
@@ -103,7 +135,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
 
         if (projectName) {
             for (const pkg of vulnerable) {
-                if (!pkg.isTransitive || seen.has(pkg.id.toLowerCase())) {
+                if (!this.transitiveInProject(pkg, projectName) || seen.has(pkg.id.toLowerCase())) {
                     continue;
                 }
 
@@ -111,11 +143,13 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
                     continue;
                 }
 
-                if (this.lineAlreadyReported(uri, 0, pkg.id)) {
+                const origin = originForProject(pkg, projectName);
+                const line = this.lineForBroughtBy(lines, origin?.broughtBy);
+                if (this.lineAlreadyReported(uri, line, pkg.id)) {
                     continue;
                 }
 
-                diagnostics.push(this.createDiagnostic(0, lines[0] || "", pkg, true));
+                diagnostics.push(this.createDiagnostic(line, lines[line] || "", pkg, true, origin));
             }
         }
 
@@ -140,17 +174,24 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         line: number,
         text: string,
         pkg: PackageInfo,
-        transitive: boolean
+        transitive: boolean,
+        origin?: TransitiveOrigin
     ): vscode.Diagnostic {
         const end = Math.max(text.length, 1);
         const range = new vscode.Range(line, 0, line, end);
         const code = auditCodeForSeverity(pkg.severity);
         const severityWord = (pkg.severity || "moderate").toLowerCase();
-        const transitiveWord = transitive ? " is transitive and" : "";
         const advisory = pkg.advisoryUrl ? `, ${pkg.advisoryUrl}` : "";
+        const via = transitive && origin?.broughtBy && !origin.absentFromGraph
+            ? ` via ${origin.broughtBy}`
+            : "";
+        const transitiveWord = transitive ? ` is transitive${via} and` : "";
+        const pruned = transitive && origin?.absentFromGraph
+            ? ". bu uyarı paket grafiğinde kalmış olabilir"
+            : "";
         const diagnostic = new vscode.Diagnostic(
             range,
-            `Package '${pkg.id}' ${pkg.version}${transitiveWord} has a known ${severityWord} severity vulnerability${advisory}`,
+            `Package '${pkg.id}' ${pkg.version}${transitiveWord} has a known ${severityWord} severity vulnerability${advisory}${pruned}`,
             vscode.DiagnosticSeverity.Warning
         );
 

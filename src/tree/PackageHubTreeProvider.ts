@@ -2,6 +2,7 @@ import * as fs from "fs/promises";
 import * as vscode from "vscode";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
+import { transitiveCaption } from "../services/TransitiveOrigin";
 import { readPackageRef } from "../utils/nugetAudit";
 import { deprecate } from "node:util";
 
@@ -134,7 +135,7 @@ export class PackageHubTreeProvider
                             p.id,
                             vscode.TreeItemCollapsibleState.None,
                             undefined,
-                            `${packageVersionText(p.id, p.version)}${p.severity ? " · " + p.severity : ""}`,
+                            `${packageVersionText(p.id, p.version)}${p.severity ? " · " + p.severity : ""}${captionSuffix(p)}`,
                             p.id,
                             p.latestVersion
                         )
@@ -366,6 +367,11 @@ function projectPackageItem(id: string, version: string | undefined): PackageHub
         shown,
         id
     );
+}
+
+function captionSuffix(pkg: { transitiveOrigins?: { project: string; broughtBy?: string; absentFromGraph: boolean }[] }): string {
+    const caption = transitiveCaption(pkg);
+    return caption ? ` · ${caption}` : "";
 }
 
 function packageVersionText(id: string, version: string | undefined): string {

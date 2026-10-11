@@ -3,6 +3,9 @@ import { PackageInfo } from "../models/PackageInfo";
 import { DotnetCli } from "../services/DotnetCli";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
+import { advisoryVerdict, firstFixedVersion } from "../services/AdvisoryCatalog";
+import { latestReleasePreferred } from "../services/ReleaseAge";
+import { originForProject } from "../services/TransitiveOrigin";
 import { logger } from "../utils/logger";
 import {
     advisoryUrlIn,
@@ -11,6 +14,7 @@ import {
     parseAdvisoryPackage,
     readDiagnosticCode,
     readPackageRef,
+    sameNuGetVersion,
 } from "../utils/nugetAudit";
 
 interface VersionLists {
@@ -36,7 +40,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         document: vscode.TextDocument,
         packageId: string,
         currentVersion: string | undefined
-    ): Promise<{ ready: boolean; patch?: string; latest?: string }> {
+    ): Promise<{ ready: boolean; patch?: string; latest?: string; latestPreferred?: boolean }> {
         const lists = await this.peekLists(document, packageId);
         if (!lists) {
             return { ready: false };
@@ -53,6 +57,9 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
             ready: true,
             patch: targets.patch,
             latest: targets.latest,
+            latestPreferred: targets.latest
+                ? latestReleasePreferred(packageId, targets.latest)
+                : true,
         };
     }
 
@@ -150,33 +157,98 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         const projectName = document.fileName.toLowerCase().endsWith(".csproj")
             ? this.scanner.getProjectName(document.uri)
             : undefined;
+        const advisory = current.vulnerable?.advisoryUrl || advisoryUrlIn(diagnostic.message);
         const actions: vscode.CodeAction[] = [];
+        const origin = originForProject(current.vulnerable, projectName);
 
-        if (targets.patch) {
-            const title = direct
-                ? `PackageHub: Update to highest patch ${targets.patch}`
-                : `PackageHub: Pin ${packageId} at ${targets.patch} (transitive)`;
+        if (origin?.absentFromGraph) {
             actions.push(this.commandAction(
-                title,
+                "PackageHub: bu uyarı paket grafiğinde kalmış olabilir",
+                "packageHub.quickFixBlocked",
+                ["bu uyarı paket grafiğinde kalmış olabilir"],
+                false
+            ));
+            if (advisory) {
+                actions.push(this.commandAction(
+                    "PackageHub: Open Advisory",
+                    "packageHub.openAdvisory",
+                    [advisory],
+                    false
+                ));
+            }
+            return actions;
+        }
+
+        const parentUpdate = !direct
+            ? this.parentPackageUpdate(origin, lists)
+            : undefined;
+        const owningProject = !direct && !parentUpdate
+            ? this.owningProject(origin, current.vulnerable?.projects, projectName)
+            : undefined;
+        const ownsPatch = !!(owningProject && targets.patch);
+
+        if (parentUpdate) {
+            actions.push(this.commandAction(
+                `PackageHub: Update ${parentUpdate.id} to highest patch ${parentUpdate.version}`,
                 "packageHub.updateVulnerable",
-                [{ packageId, version: targets.patch, projectName }],
+                [{ packageId: parentUpdate.id, version: parentUpdate.version, projectName }],
                 true
             ));
         }
 
-        if (targets.latest) {
-            const title = direct
-                ? `PackageHub: Update to latest ${targets.latest}`
-                : `PackageHub: Pin ${packageId} at latest ${targets.latest} (transitive)`;
+        if (ownsPatch && owningProject && targets.patch) {
+            const base = `PackageHub: Update ${packageId} in ${owningProject} to highest patch ${targets.patch}`;
             actions.push(this.commandAction(
-                title,
+                this.withVerdict(base, packageId, advisory, targets.patch),
                 "packageHub.updateVulnerable",
-                [{ packageId, version: targets.latest, projectName }],
-                !targets.patch
+                [{ packageId, version: targets.patch, projectName: owningProject }],
+                true
             ));
         }
 
-        if (!targets.patch && !targets.latest) {
+        if (targets.patch) {
+            const base = direct
+                ? `PackageHub: Update to highest patch ${targets.patch}`
+                : `PackageHub: Pin ${packageId} at ${targets.patch} (transitive)`;
+            actions.push(this.commandAction(
+                this.withVerdict(base, packageId, advisory, targets.patch),
+                "packageHub.updateVulnerable",
+                [{ packageId, version: targets.patch, projectName }],
+                !parentUpdate && !ownsPatch
+            ));
+        }
+
+        if (targets.latest) {
+            const base = direct
+                ? `PackageHub: Update to latest ${targets.latest}`
+                : `PackageHub: Pin ${packageId} at latest ${targets.latest} (transitive)`;
+            const mature = latestReleasePreferred(packageId, targets.latest);
+            const title = this.withVerdict(base, packageId, advisory, targets.latest);
+            actions.push(this.commandAction(
+                mature ? title : `${title}, younger than the age gate`,
+                "packageHub.updateVulnerable",
+                [{ packageId, version: targets.latest, projectName }],
+                !targets.patch && !parentUpdate && !ownsPatch && mature
+            ));
+        }
+
+        const fixed = firstFixedVersion(packageId, advisory, currentVersion);
+        const showFixed = !!fixed
+            && !sameNuGetVersion(fixed, targets.patch)
+            && !sameNuGetVersion(fixed, targets.latest);
+        if (fixed && showFixed) {
+            const base = direct
+                ? `PackageHub: Update to first fixed version ${fixed}`
+                : `PackageHub: Pin ${packageId} at first fixed ${fixed} (transitive)`;
+            actions.push(this.commandAction(
+                this.withVerdict(base, packageId, advisory, fixed),
+                "packageHub.updateVulnerable",
+                [{ packageId, version: fixed, projectName }],
+                false
+            ));
+        }
+
+        if (!targets.patch && !targets.latest && !showFixed && !parentUpdate) {
             actions.push(this.commandAction(
                 `PackageHub: No patch version for ${packageId}. Update was not started.`,
                 "packageHub.quickFixBlocked",
@@ -185,7 +257,6 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
             ));
         }
 
-        const advisory = current.vulnerable?.advisoryUrl || advisoryUrlIn(diagnostic.message);
         if (advisory) {
             actions.push(this.commandAction(
                 "PackageHub: Open Advisory",
@@ -196,6 +267,61 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         }
 
         return actions;
+    }
+
+    private parentPackageUpdate(
+        origin: { broughtBy?: string; broughtByKind?: "package" | "project" } | undefined,
+        lists: VersionLists | undefined
+    ): { id: string; version: string } | undefined {
+        if (origin?.broughtByKind !== "package" || !origin.broughtBy) {
+            return undefined;
+        }
+
+        const current = ScanState.findPackage(origin.broughtBy);
+        const currentVersion = current.outdated?.version || current.vulnerable?.version;
+        const patch = chooseQuickFixVersions(
+            currentVersion,
+            this.versionFrom(lists?.patch, origin.broughtBy),
+            undefined
+        ).patch;
+        if (!patch) {
+            return undefined;
+        }
+
+        return { id: origin.broughtBy, version: patch };
+    }
+
+    private owningProject(
+        origin: { broughtBy?: string; broughtByKind?: "package" | "project" } | undefined,
+        projects: string[] | undefined,
+        currentProject: string | undefined
+    ): string | undefined {
+        if (origin?.broughtByKind !== "project" || !origin.broughtBy) {
+            return undefined;
+        }
+
+        const owner = projects?.find((name) => name.toLowerCase() === origin.broughtBy?.toLowerCase());
+        if (!owner || owner.toLowerCase() === currentProject?.toLowerCase()) {
+            return undefined;
+        }
+
+        return owner;
+    }
+
+    private withVerdict(
+        title: string,
+        packageId: string,
+        advisoryUrl: string | undefined,
+        version: string
+    ): string {
+        const verdict = advisoryVerdict(packageId, advisoryUrl, version);
+        if (verdict === "open") {
+            return `${title}, advisory stays open`;
+        }
+        if (verdict === "closed") {
+            return `${title}, advisory closes`;
+        }
+        return title;
     }
 
     private versionFrom(packages: PackageInfo[] | undefined, packageId: string): string | undefined {

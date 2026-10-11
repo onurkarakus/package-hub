@@ -1,4 +1,12 @@
+import * as vscode from "vscode";
 import { PackageInfo } from "../models/PackageInfo";
+import { meetsMinimumSeverity } from "../utils/nugetAudit";
+
+export interface PackageSourceState {
+    found: boolean;
+    unreadable: boolean;
+    names: string[];
+}
 
 export class ScanState {
     private static vulnerable: PackageInfo[] = [];
@@ -7,6 +15,7 @@ export class ScanState {
     private static scannedAt: Date | undefined;
     private static hasCpm = false;
     private static centralVersions = new Map<string, string>();
+    private static packageSources: PackageSourceState | undefined;
 
     static setCpm(hasCpm: boolean) {
         this.hasCpm = hasCpm;
@@ -14,6 +23,14 @@ export class ScanState {
 
     static getCpm(): boolean {
         return this.hasCpm;
+    }
+
+    static setPackageSources(sources: PackageSourceState) {
+        this.packageSources = sources;
+    }
+
+    static getPackageSources(): PackageSourceState | undefined {
+        return this.packageSources;
     }
 
     static setCentralVersions(versions: { id: string; version: string }[]) {
@@ -42,8 +59,13 @@ export class ScanState {
         this.scannedAt = scannedAt ?? new Date();
     }
 
-    static getVulnerable(): PackageInfo[] {
+    static getAllVulnerable(): PackageInfo[] {
         return this.vulnerable;
+    }
+
+    static getVulnerable(): PackageInfo[] {
+        const minimum = vscode.workspace.getConfiguration("packageHub").get<string>("minimumSeverity") || "low";
+        return this.vulnerable.filter((pkg) => meetsMinimumSeverity(pkg.severity, minimum));
     }
 
     static getOutDated(): PackageInfo[] {
@@ -63,9 +85,11 @@ export class ScanState {
         deprecated?: PackageInfo
     } {
         const id = packageId.toLocaleLowerCase();
+        const vulnerable = this.vulnerable.find((p) => p.id.toLowerCase() === id);
+        const minimum = vscode.workspace.getConfiguration("packageHub").get<string>("minimumSeverity") || "low";
 
         return {
-            vulnerable: this.vulnerable.find((p) => p.id.toLowerCase() === id),
+            vulnerable: vulnerable && meetsMinimumSeverity(vulnerable.severity, minimum) ? vulnerable : undefined,
             outdated: this.outdated.find((p) => p.id.toLowerCase() === id),
             deprecated: this.deprecated.find((p) => p.id.toLowerCase() === id),
         };
@@ -75,7 +99,7 @@ export class ScanState {
         id: string;
         versions: { version: string; projects: string[] }[];
     }[] {
-        const all = [...this.vulnerable, ...this.outdated, ...this.deprecated];
+        const all = [...this.getVulnerable(), ...this.outdated, ...this.deprecated];
         const byId = new Map<string, Map<string, string[]>>();
 
         for (const p of all as any[]) {

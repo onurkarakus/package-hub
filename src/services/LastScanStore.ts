@@ -19,7 +19,7 @@ export async function saveLastScan(state: vscode.Memento): Promise<void> {
     }
 
     const record: LastScanRecord = {
-        vulnerable: ScanState.getVulnerable(),
+        vulnerable: ScanState.getAllVulnerable(),
         outdated: ScanState.getOutDated(),
         deprecated: ScanState.getDeprecated(),
         scannedAt: scannedAt.toISOString(),

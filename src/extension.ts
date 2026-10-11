@@ -7,7 +7,11 @@ import { CacheService } from "./services/CacheService";
 import { PackageHubTreeProvider } from "./tree/PackageHubTreeProvider";
 import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
+import { loadAdvisoryCatalog } from "./services/AdvisoryCatalog";
+import { loadReleaseAges } from "./services/ReleaseAge";
+import { attachTransitiveOrigins } from "./services/TransitiveOrigin";
 import { refreshCentralPackages } from "./services/CentralPackages";
+import { refreshNuGetSources } from "./services/NuGetSources";
 import { restoreLastScan, saveLastScan } from "./services/LastScanStore";
 import { buildHealthReport } from "./services/HealthReport";
 import { isSafeChannelTarget, readPackageRef } from "./utils/nugetAudit";
@@ -21,6 +25,137 @@ let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
 
 const PROJECT_SCAN_CONCURRENCY = 2;
+
+function escapeXml(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+}
+
+function advisorySuppressUrl(packageId: string): string | undefined {
+	const url = ScanState.findPackage(packageId).vulnerable?.advisoryUrl;
+	if (!url || !url.startsWith("https://")) {
+		return undefined;
+	}
+	return url;
+}
+
+function alreadySuppressed(text: string, url: string): boolean {
+	const id = url.split("/").filter(Boolean).pop()?.toLowerCase();
+	for (const match of text.matchAll(/<NuGetAuditSuppress\b[^>]*\bInclude\s*=\s*"([^"]+)"/gi)) {
+		const value = match[1].toLowerCase();
+		if (value === url.toLowerCase() || (id && value === id)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function fileReferencesPackage(text: string, packageId: string): boolean {
+	return text.split(/\r?\n/).some((line) => {
+		const ref = readPackageRef(line);
+		return ref?.kind === "reference" && ref.id.toLowerCase() === packageId.toLowerCase();
+	});
+}
+
+async function suppressTarget(packageId: string): Promise<vscode.Uri | undefined> {
+	const found = ScanState.findPackage(packageId);
+	const names = new Set(
+		[
+			...(found.vulnerable?.projects || []),
+			...(found.outdated?.projects || []),
+			...(found.deprecated?.projects || []),
+		].map((name) => name.toLowerCase())
+	);
+	const projects = await workspaceScanner.findProjects();
+	const named = projects.filter((project) =>
+		names.has(workspaceScanner.getProjectName(project).toLowerCase())
+	);
+	const withReference: vscode.Uri[] = [];
+	for (const project of named) {
+		const document = await vscode.workspace.openTextDocument(project);
+		if (fileReferencesPackage(document.getText(), packageId)) {
+			withReference.push(project);
+		}
+	}
+	const candidates = withReference.length > 0 ? withReference : named;
+	if (candidates.length === 0) {
+		return undefined;
+	}
+
+	const editor = vscode.window.activeTextEditor;
+	const active = editor
+		? candidates.find((project) => project.fsPath === editor.document.uri.fsPath)
+		: undefined;
+	if (active) {
+		return active;
+	}
+	if (candidates.length === 1) {
+		return candidates[0];
+	}
+
+	const picked = await vscode.window.showQuickPick(
+		candidates.map((project) => ({
+			label: workspaceScanner.getProjectName(project),
+			uri: project,
+		})),
+		{ placeHolder: "Suppress hangi projeye yazılsın" }
+	);
+	return picked?.uri;
+}
+
+async function openSuppressDiff(packageId: string, url: string): Promise<void> {
+	const uri = await suppressTarget(packageId);
+	if (!uri) {
+		vscode.window.showWarningMessage("Bu paketin csproj dosyası bulunamadı. Suppress yazılmadı.");
+		return;
+	}
+
+	const document = await vscode.workspace.openTextDocument(uri);
+	const text = document.getText();
+	if (alreadySuppressed(text, url)) {
+		vscode.window.showInformationMessage("Bu advisory zaten NuGetAuditSuppress içinde.");
+		return;
+	}
+
+	const closing = text.lastIndexOf("</Project>");
+	if (closing < 0) {
+		vscode.window.showErrorMessage("csproj kapanışı yok. Suppress yazılmadı.");
+		return;
+	}
+
+	const eol = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
+	const snippet = [
+		"",
+		"  <ItemGroup>",
+		`    <NuGetAuditSuppress Include="${escapeXml(url)}" />`,
+		"  </ItemGroup>",
+		"",
+	].join(eol);
+	const edit = new vscode.WorkspaceEdit();
+	edit.insert(uri, document.positionAt(closing), snippet);
+	const applied = await vscode.workspace.applyEdit(edit);
+	if (!applied) {
+		vscode.window.showErrorMessage("Suppress taslağı açılamadı. Dosya değişmedi.");
+		return;
+	}
+
+	const at = document.positionAt(closing);
+	await vscode.window.showTextDocument(document, {
+		selection: new vscode.Range(at, at.translate(0, 4)),
+		preview: false,
+	});
+	try {
+		await vscode.commands.executeCommand("workbench.files.action.compareWithSaved");
+	} catch (error: any) {
+		logger.info(`Diff komutu açılmadı: ${error?.message || error}`);
+	}
+	vscode.window.showInformationMessage(
+		"Suppress taslağı diff’te açıldı. Kaydet, sonra Restore All çalıştır. Kaydetmezsen dosya değişmez."
+	);
+}
 
 interface TargetScan {
 	vulnerable: any[];
@@ -45,7 +180,7 @@ async function scanOneTarget(
 		});
 
 	const settled = await Promise.allSettled([
-		track("vulnerable", cli.listVulnerable(targetPath, false, signal)),
+		track("vulnerable", cli.listVulnerable(targetPath, true, signal)),
 		track("outdated", cli.listOutdated(targetPath, false, "latest", signal)),
 		track("deprecated", cli.listDeprecated(targetPath, signal)),
 	]);
@@ -285,6 +420,25 @@ export function activate(context: vscode.ExtensionContext) {
 		codeLensProvider.refresh();
 	}
 
+	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+		if (event.affectsConfiguration("packageHub.minimumSeverity")) {
+			const minimum = vscode.workspace.getConfiguration("packageHub").get<string>("minimumSeverity") || "low";
+			logger.info(`Severity eşiği: ${minimum}`);
+			paintScanStatus(statusBarItem);
+			treeProvider.refresh();
+			HealthDashboardPanel.refreshIfOpen();
+			codeLensProvider.refresh();
+			void auditDiagnostics.refresh();
+		}
+
+		if (event.affectsConfiguration("packageHub.minimumReleaseAge")) {
+			const days = vscode.workspace.getConfiguration("packageHub").get<number>("minimumReleaseAge");
+			logger.info(typeof days === "number" && days > 0
+				? `Yaş kapısı: ${days} gün`
+				: "Yaş kapısı kapalı.");
+		}
+	}));
+
 	void refreshCentralPackages(workspaceScanner)
 		.then(() => {
 			treeProvider.refresh();
@@ -292,6 +446,14 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 		.catch((error: any) => {
 			logger.error(`CPM okunamadı: ${error.message}`);
+		});
+
+	void refreshNuGetSources(workspaceScanner)
+		.then(() => {
+			HealthDashboardPanel.refreshIfOpen();
+		})
+		.catch((error: any) => {
+			logger.error(`NuGet.config okunamadı: ${error.message}`);
 		});
 
 	// Hover açıklamasıdır. Güncelleme linkleri ampulün önbelleğini okur, yeni dotnet çağrısı başlatmaz.
@@ -342,6 +504,7 @@ export function activate(context: vscode.ExtensionContext) {
 					...p,
 					projects: [...(p.projects || [])],
 					versionByProject,
+					transitiveProjects: [...(p.transitiveProjects || [])],
 				});
 				continue;
 			}
@@ -360,17 +523,113 @@ export function activate(context: vscode.ExtensionContext) {
 			if (p.latestVersion && !existing.latestVersion) {
 				existing.latestVersion = p.latestVersion;
 			}
+
+			if (!existing.transitiveProjects) {
+				existing.transitiveProjects = [];
+			}
+			for (const project of p.transitiveProjects || []) {
+				if (!existing.transitiveProjects.includes(project)) {
+					existing.transitiveProjects.push(project);
+				}
+			}
+			if (!p.isTransitive) {
+				existing.isTransitive = false;
+			}
 		}
 
 		return Array.from(map.values());
 	}
 
+	function packageOnActiveLine(): {
+		id: string;
+		version?: string;
+		kind: "reference" | "version";
+		projectName?: string;
+		document: vscode.TextDocument;
+	} | undefined {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			return undefined;
+		}
+
+		const ref = readPackageRef(editor.document.lineAt(editor.selection.active.line).text);
+		if (!ref) {
+			return undefined;
+		}
+
+		const projectName = editor.document.fileName.toLowerCase().endsWith(".csproj")
+			? workspaceScanner.getProjectName(editor.document.uri)
+			: undefined;
+		return { ...ref, projectName, document: editor.document };
+	}
+
+	function lineCurrentVersion(ref: {
+		id: string;
+		version?: string;
+		kind: "reference" | "version";
+	}): string | undefined {
+		const found = ScanState.findPackage(ref.id);
+		const usesCentral = ref.kind === "version" || !ref.version;
+		const centralVersion = ref.kind === "version"
+			? ref.version
+			: ScanState.getCentralVersion(ref.id);
+		return usesCentral
+			? centralVersion
+			: (ref.version || found.vulnerable?.version || found.outdated?.version);
+	}
+
+	async function updateActiveLine(channel: "patch" | "latest"): Promise<void> {
+		const ref = packageOnActiveLine();
+		if (!ref) {
+			vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+			return;
+		}
+
+		const peek = await codeActionProvider.peekUpdateTargets(
+			ref.document,
+			ref.id,
+			lineCurrentVersion(ref)
+		);
+		if (!peek.ready) {
+			vscode.window.showInformationMessage(
+				"Patch listesi henüz hazır değil. Güncelleme başlatılmadı."
+			);
+			return;
+		}
+
+		const version = channel === "patch" ? peek.patch : peek.latest;
+		if (!version) {
+			vscode.window.showWarningMessage(
+				`${ref.id} için ${channel} sürümü yok. Güncelleme başlatılmadı.`
+			);
+			return;
+		}
+
+		await vscode.commands.executeCommand("packageHub.updateVulnerable", {
+			packageId: ref.id,
+			version,
+			projectName: ref.projectName,
+		});
+	}
+
 	const ignorePackageCommand = vscode.commands.registerCommand(
 		"packageHub.ignorePackage",
-		async (packageId?: string) => {
+		async (packageId?: string | { packageId?: string }) => {
 
 			if (packageId && typeof packageId === "object") {
-				packageId = (packageId as any).packageId;
+				packageId = packageId.packageId;
+			}
+
+			if (typeof packageId !== "string" || packageId.trim().length === 0) {
+				const editor = vscode.window.activeTextEditor;
+				const inProjectFile = !!editor && /\.(csproj|props)$/i.test(editor.document.fileName);
+				const fromLine = packageOnActiveLine()?.id;
+				if (fromLine) {
+					packageId = fromLine;
+				} else if (inProjectFile) {
+					vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+					return;
+				}
 			}
 
 			if (!packageId) {
@@ -399,6 +658,34 @@ export function activate(context: vscode.ExtensionContext) {
 				packageId = picked;
 			}
 
+			const url = advisorySuppressUrl(packageId);
+			const choice = await vscode.window.showQuickPick(
+				[
+					{
+						label: "Hide in PackageHub",
+						description: "Liste",
+						detail: "Build uyarısı durur",
+					},
+					{
+						label: "Suppress this advisory",
+						description: url ? "NuGetAuditSuppress" : "Kapalı",
+						detail: url || "Advisory URL yok",
+					},
+				],
+				{ placeHolder: `${packageId} için ignore` }
+			);
+			if (!choice) {
+				return;
+			}
+			if (choice.label === "Suppress this advisory") {
+				if (!url) {
+					vscode.window.showWarningMessage("Advisory URL yok. Suppress kapalı.");
+					return;
+				}
+				await openSuppressDiff(packageId, url);
+				return;
+			}
+
 			const config = vscode.workspace.getConfiguration("packageHub");
 			const current = config.get<string[]>("ignoredPackages", []);
 
@@ -409,7 +696,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 			await config.update("ignoredPackages", [...current, packageId], vscode.ConfigurationTarget.Workspace);
 
-			vscode.window.showInformationMessage(`${packageId} ignore listesine eklendi.`);
+			vscode.window.showInformationMessage(
+				`${packageId} PackageHub listesinden gizlendi. Build uyarısı durur.`
+			);
 			await vscode.commands.executeCommand("packageHub.scanWorkspace");
 		}
 	);
@@ -628,7 +917,32 @@ export function activate(context: vscode.ExtensionContext) {
 						outdated = outdated.filter((p) => !ignored.includes(p.id.toLowerCase()));
 						deprecated = deprecated.filter((p) => !ignored.includes(p.id.toLowerCase()));
 
+						try {
+							const projectFiles = await workspaceScanner.findProjects();
+							await attachTransitiveOrigins(
+								vulnerable,
+								projectFiles.map((project) => ({
+									name: workspaceScanner.getProjectName(project),
+									path: project.fsPath,
+								}))
+							);
+						} catch (originError: any) {
+							logger.error(`Transitive üst paket okunamadı: ${originError.message}`);
+						}
+
 						ScanState.setResults(vulnerable, outdated, deprecated);
+
+						try {
+							await loadAdvisoryCatalog();
+						} catch (advisoryError: any) {
+							logger.error(`Advisory kaydı okunamadı: ${advisoryError.message}`);
+						}
+
+						try {
+							await loadReleaseAges();
+						} catch (ageError: any) {
+							logger.error(`Yaş kaydı okunamadı: ${ageError.message}`);
+						}
 
 						paintScanStatus(statusBarItem);
 						treeProvider.refresh();
@@ -642,6 +956,12 @@ export function activate(context: vscode.ExtensionContext) {
 							);
 						} catch (cpmError: any) {
 							logger.error(`CPM okunamadı: ${cpmError.message}`);
+						}
+
+						try {
+							await refreshNuGetSources(workspaceScanner);
+						} catch (sourceError: any) {
+							logger.error(`NuGet.config okunamadı: ${sourceError.message}`);
 						}
 
 						try {
@@ -775,8 +1095,12 @@ export function activate(context: vscode.ExtensionContext) {
 				}
 			}
 
+			const currentVersion = vulnerable?.version || outdated?.version;
+			const heading = currentVersion
+				? `${packageId} ${currentVersion} → ${version}`
+				: `${packageId} → ${version}`;
 			const confirm = await vscode.window.showWarningMessage(
-				`${packageId} → ${version}\n\nGüncellenecek projeler:\n${projectNames}`,
+				`${heading}\n\nGüncellenecek projeler:\n${projectNames}`,
 				{ modal: true },
 				"Evet, Güncelle"
 			);
@@ -853,6 +1177,133 @@ export function activate(context: vscode.ExtensionContext) {
 	const updateHighestMinorCommand = vscode.commands.registerCommand(
 		"packageHub.updateHighestMinor",
 		() => applySafeUpdate("minor")
+	);
+
+	const removePackageCommand = vscode.commands.registerCommand(
+		"packageHub.removePackage",
+		async (args?: { packageId?: string; projectName?: string }) => {
+			const requestedId = typeof args?.packageId === "string" ? args.packageId.trim() : "";
+			const requestedProject = typeof args?.projectName === "string" ? args.projectName.trim() : "";
+			const fromItem = requestedId.length > 0;
+			let packageId = requestedId;
+			const editor = vscode.window.activeTextEditor;
+			const editorIsProject = !!editor && editor.document.fileName.toLowerCase().endsWith(".csproj");
+			if (!packageId && editor) {
+				packageId = readPackageRef(
+					editor.document.lineAt(editor.selection.active.line).text
+				)?.id || "";
+			}
+
+			if (!packageId) {
+				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				return;
+			}
+
+			const allProjects = await workspaceScanner.findProjects();
+			let targets = allProjects;
+			if (requestedProject) {
+				const named = allProjects.find(
+					(project) => workspaceScanner.getProjectName(project) === requestedProject
+				);
+				targets = named ? [named] : [];
+			} else if (!fromItem && editorIsProject && editor) {
+				const active = allProjects.find((project) => project.fsPath === editor.document.uri.fsPath);
+				targets = active ? [active] : [editor.document.uri];
+			} else {
+				const found = ScanState.findPackage(packageId);
+				const names = new Set(
+					[
+						...(found.vulnerable?.projects || []),
+						...(found.outdated?.projects || []),
+						...(found.deprecated?.projects || []),
+					].map((name) => name.toLowerCase())
+				);
+				const matched = allProjects.filter((project) =>
+					names.has(workspaceScanner.getProjectName(project).toLowerCase())
+				);
+				targets = matched;
+			}
+
+			if (targets.length === 0) {
+				vscode.window.showErrorMessage(
+					`${packageId} paketinin bulunduğu proje eşleştirilemedi. Kaldırma başlatılmadı.`
+				);
+				return;
+			}
+
+			const projectNames = targets
+				.map((project) => workspaceScanner.getProjectName(project))
+				.join("\n");
+			const confirm = await vscode.window.showWarningMessage(
+				`${packageId} kaldırılsın mı?\n\n${projectNames}`,
+				{ modal: true },
+				"Evet, Kaldır"
+			);
+			if (confirm !== "Evet, Kaldır") {
+				return;
+			}
+
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: "PackageHub",
+					cancellable: false,
+				},
+				async (progress) => {
+					let removed = 0;
+					try {
+						for (const project of targets) {
+							progress.report({
+								message: `${packageId} kaldırılıyor → ${workspaceScanner.getProjectName(project)}`,
+							});
+							await dotnetCli.removePackage(project.fsPath, packageId);
+							removed += 1;
+							logger.info(`Kaldırıldı: ${packageId} (${project.fsPath})`);
+						}
+
+						vscode.window.showInformationMessage(`${packageId} kaldırıldı.`);
+						await vscode.commands.executeCommand("packageHub.scanWorkspace");
+					} catch (error: any) {
+						const msg = error.message || String(error);
+						logger.show(true);
+						logger.error(`Kaldırma hatası: ${msg}`);
+						vscode.window.showErrorMessage(`Kaldırma başarısız: ${msg}`);
+						if (removed > 0) {
+							await vscode.commands.executeCommand("packageHub.scanWorkspace");
+						}
+					}
+				}
+			);
+		}
+	);
+
+	const updateLinePatchCommand = vscode.commands.registerCommand(
+		"packageHub.updateLinePatch",
+		() => updateActiveLine("patch")
+	);
+
+	const updateLineLatestCommand = vscode.commands.registerCommand(
+		"packageHub.updateLineLatest",
+		() => updateActiveLine("latest")
+	);
+
+	const openLineAdvisoryCommand = vscode.commands.registerCommand(
+		"packageHub.openLineAdvisory",
+		async () => {
+			const ref = packageOnActiveLine();
+			if (!ref) {
+				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				return;
+			}
+
+			const url = advisorySuppressUrl(ref.id);
+			if (!url) {
+				vscode.window.showWarningMessage("Advisory adresi yok. Güncelleme başlatılmadı.");
+				return;
+			}
+
+			await vscode.env.openExternal(vscode.Uri.parse(url));
+		}
 	);
 
 	const updateSelectedCommand = vscode.commands.registerCommand(
@@ -1132,6 +1583,10 @@ export function activate(context: vscode.ExtensionContext) {
 		updateHighestMinorCommand,
 		showDashboardCommand,
 		updateSelectedCommand,
+		removePackageCommand,
+		updateLinePatchCommand,
+		updateLineLatestCommand,
+		openLineAdvisoryCommand,
 		showPackageInfoCommand,
 		openNugetCommand,
 		restoreAllCommand,

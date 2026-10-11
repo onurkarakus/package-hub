@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { ScanState } from "../services/ScanState";
+import { transitiveCaption } from "../services/TransitiveOrigin";
 
 function escapeHtml(value: string): string {
   return value
@@ -14,6 +15,16 @@ function escapeJs(value: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "\\'")
     .replace(/\r?\n/g, " ");
+}
+
+function graphOnlyWarning(pkg: {
+  isTransitive?: boolean;
+  transitiveOrigins?: { absentFromGraph: boolean }[];
+}): boolean {
+  const origins = pkg.transitiveOrigins || [];
+  return pkg.isTransitive === true
+    && origins.length > 0
+    && origins.every((origin) => origin.absentFromGraph);
 }
 
 function packageNameButton(id: string): string {
@@ -150,6 +161,16 @@ export class HealthDashboardPanel {
     const deprecatedCount = deprecated.length;
 
     const hasCpm = ScanState.getCpm();
+    const sources = ScanState.getPackageSources();
+    const sourcesText = !sources
+      ? ""
+      : sources.unreadable
+        ? "NuGet.config okunamadı."
+        : !sources.found
+          ? "NuGet.config yok."
+          : sources.names.length === 0
+            ? "Kaynak yok."
+            : `Sources: ${escapeHtml(sources.names.join(", "))}`;
 
     const scannedAt = ScanState.getScannedAt();
     const scannedText = scannedAt
@@ -198,15 +219,17 @@ export class HealthDashboardPanel {
                 ? "Deprecated"
                 : "Outdated";
 
-          const updateButton = latest
+          const updateButton = latest && !graphOnlyWarning(p)
             ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update to latest</button>`
             : "";
+          const caption = transitiveCaption(p);
 
           return `
         <tr data-package-id="${escapeHtml(p.id)}" data-severity="${escapeHtml(packageSeverity(p))}">
           <td>
             ${packageNameButton(p.id)}
             <span class="badge ${badgeClass}">${badgeText}</span>
+            ${caption ? `<div>${escapeHtml(caption)}</div>` : ""}
           </td>
           <td>${p.version}</td>
           <td>${latest || "—"}</td>
@@ -397,9 +420,10 @@ export class HealthDashboardPanel {
           .join("");
 
         const latest = p.latestVersion || "";
-        const updateButton = latest
+        const updateButton = latest && !graphOnlyWarning(p)
           ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update to latest</button>`
           : "";
+        const caption = transitiveCaption(p);
 
         return `
           <details class="filter-group" open data-package-id="${escapeHtml(p.id)}" data-severity="${escapeHtml(packageSeverity(p))}">
@@ -419,6 +443,7 @@ export class HealthDashboardPanel {
           }
               </span>
               <span style="opacity:0.7"> ${p.version} → ${latest || "—"}</span>
+              ${caption ? `<span style="opacity:0.7"> ${escapeHtml(caption)}</span>` : ""}
               ${updateButton}
             </summary>
             <ul>${projectList}</ul>
@@ -465,6 +490,7 @@ export class HealthDashboardPanel {
       min-width: 130px;
     }
     .card-title { font-size: 0.8rem; opacity: 0.75; margin-bottom: 4px; }
+    .sources { margin: -8px 0 16px; font-size: 0.9rem; color: var(--vscode-foreground); }
     .card-value { font-size: 1.5rem; font-weight: 600; }
     .vulnerable { color: #f14c4c; }
     .outdated { color: #cca700; }
@@ -613,6 +639,8 @@ export class HealthDashboardPanel {
       </div>
     </div>
   </div>
+
+  ${sourcesText ? `<p class="sources">${sourcesText}</p>` : ""}
 
   <div class="safe-actions">
     <button onclick="refresh()">Refresh Scan</button>

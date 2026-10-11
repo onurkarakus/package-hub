@@ -52,7 +52,7 @@ export class WorkspaceScanner {
      */
     async findNuGetConfigs(): Promise<vscode.Uri[]> {
         return vscode.workspace.findFiles(
-            "**/NuGet.config",
+            "**/{NuGet.config,nuget.config,NuGet.Config}",
             "**/{node_modules,bin,obj,.git}/**"
         );
     }
