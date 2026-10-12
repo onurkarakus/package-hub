@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { PackageInfo } from "../models/PackageInfo";
 import { ScanState } from "./ScanState";
+import { logger } from "../utils/logger";
 
 const LAST_SCAN_KEY = "packageHub.lastScan";
 
@@ -26,11 +27,21 @@ export async function saveLastScan(state: vscode.Memento): Promise<void> {
         hasCpm: ScanState.getCpm(),
     };
 
-    await state.update(LAST_SCAN_KEY, record);
+    try {
+        await state.update(LAST_SCAN_KEY, record);
+    } catch (error: any) {
+        logger.error(`Son tarama yazılamadı: ${error?.message || error}`);
+    }
 }
 
 export function restoreLastScan(state: vscode.Memento): boolean {
-    const record = state.get<Partial<LastScanRecord>>(LAST_SCAN_KEY);
+    let record: Partial<LastScanRecord> | undefined;
+    try {
+        record = state.get<Partial<LastScanRecord>>(LAST_SCAN_KEY);
+    } catch (error: any) {
+        logger.error(`Son tarama okunamadı: ${error?.message || error}`);
+        return false;
+    }
     if (!record) {
         return false;
     }

@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { ScanState } from "../services/ScanState";
-import { transitiveCaption } from "../services/TransitiveOrigin";
+import { formatProjectRelations, projectRelationCaption } from "../services/TransitiveOrigin";
 
 function escapeHtml(value: string): string {
   return value
@@ -161,7 +161,10 @@ export class HealthDashboardPanel {
     const deprecatedCount = deprecated.length;
 
     const hasCpm = ScanState.getCpm();
+    const scannedAt = ScanState.getScannedAt();
+    const scannedText = scannedAt ? `Last scanned ${scannedAt.toLocaleString()}` : "";
     const sources = ScanState.getPackageSources();
+    const auditDataGap = ScanState.hasAuditDataGap();
     const sourcesText = !sources
       ? ""
       : sources.unreadable
@@ -171,11 +174,6 @@ export class HealthDashboardPanel {
           : sources.names.length === 0
             ? "Kaynak yok."
             : `Sources: ${escapeHtml(sources.names.join(", "))}`;
-
-    const scannedAt = ScanState.getScannedAt();
-    const scannedText = scannedAt
-      ? `Last scanned: ${scannedAt.toLocaleString()}`
-      : "Not scanned yet";
 
     const viewMode =
       vscode.workspace
@@ -194,10 +192,13 @@ export class HealthDashboardPanel {
 
     const createRows = (
       packages: any[],
-      type: "vulnerable" | "outdated" | "deprecated"
+      type: "vulnerable" | "outdated" | "deprecated",
+      projectName?: string,
+      showProjects = true
     ) => {
+      const columns = showProjects ? 5 : 4;
       if (packages.length === 0) {
-        return `<tr><td colspan="5" style="opacity:0.6; padding:12px;">No ${type} packages</td></tr>`;
+        return `<tr><td colspan="${columns}" style="opacity:0.6; padding:12px;">No ${type} packages</td></tr>`;
       }
 
       return packages
@@ -222,7 +223,7 @@ export class HealthDashboardPanel {
           const updateButton = latest && !graphOnlyWarning(p)
             ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update to latest</button>`
             : "";
-          const caption = transitiveCaption(p);
+          const caption = projectName ? projectRelationCaption(p, projectName) : "";
 
           return `
         <tr data-package-id="${escapeHtml(p.id)}" data-severity="${escapeHtml(packageSeverity(p))}">
@@ -233,7 +234,7 @@ export class HealthDashboardPanel {
           </td>
           <td>${p.version}</td>
           <td>${latest || "—"}</td>
-          <td>${p.projects?.join(", ") || "—"}</td>
+          ${showProjects ? `<td>${escapeHtml(formatProjectRelations(p))}</td>` : ""}
           <td>${updateButton}</td>
         </tr>
       `;
@@ -270,15 +271,32 @@ export class HealthDashboardPanel {
           kind: p.kind,
           severity: p.severity,
           projects: [...(p.projects || [])],
+          isTransitive: p.isTransitive,
+          transitiveProjects: [...(p.transitiveProjects || [])],
+          transitiveOrigins: [...(p.transitiveOrigins || [])],
         };
       } else {
         if (!byPackage[key].severity && p.severity) {
           byPackage[key].severity = p.severity;
         }
+        if (p.latestVersion && !byPackage[key].latestVersion) {
+          byPackage[key].latestVersion = p.latestVersion;
+        }
         for (const proj of p.projects || []) {
           if (!byPackage[key].projects.includes(proj)) {
             byPackage[key].projects.push(proj);
           }
+        }
+        if (!byPackage[key].transitiveProjects) {
+          byPackage[key].transitiveProjects = [];
+        }
+        for (const project of p.transitiveProjects || []) {
+          if (!byPackage[key].transitiveProjects.includes(project)) {
+            byPackage[key].transitiveProjects.push(project);
+          }
+        }
+        if (!byPackage[key].transitiveOrigins?.length && p.transitiveOrigins?.length) {
+          byPackage[key].transitiveOrigins = [...p.transitiveOrigins];
         }
       }
     }
@@ -391,7 +409,7 @@ export class HealthDashboardPanel {
     const byProjectHtml = Object.keys(byProject)
       .sort()
       .map((projectName) => {
-        const rows = createRows(byProject[projectName], "outdated");
+        const rows = createRows(byProject[projectName], "outdated", projectName, false);
         return `
           <details class="filter-group" open>
             <summary><strong>${projectName}</strong> (${byProject[projectName].length})</summary>
@@ -401,7 +419,6 @@ export class HealthDashboardPanel {
                   <th>Package</th>
                   <th>Version</th>
                   <th>Latest</th>
-                  <th>Projects</th>
                   <th>Action</th>
                 </tr>
               </thead>
@@ -416,14 +433,17 @@ export class HealthDashboardPanel {
       .sort((a: any, b: any) => a.id.localeCompare(b.id))
       .map((p: any) => {
         const projectList = (p.projects || [])
-          .map((proj: string) => `<li>${proj}</li>`)
+          .map((proj: string) => {
+            const relation = projectRelationCaption(p, proj);
+            const text = relation ? `${proj} · ${relation}` : proj;
+            return `<li>${escapeHtml(text)}</li>`;
+          })
           .join("");
 
         const latest = p.latestVersion || "";
         const updateButton = latest && !graphOnlyWarning(p)
-          ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update to latest</button>`
+          ? `<button class="row-btn" onclick="updatePackage('${escapeJs(p.id)}', '${escapeJs(latest)}')">Update to latest</button>`
           : "";
-        const caption = transitiveCaption(p);
 
         return `
           <details class="filter-group" open data-package-id="${escapeHtml(p.id)}" data-severity="${escapeHtml(packageSeverity(p))}">
@@ -442,11 +462,10 @@ export class HealthDashboardPanel {
               : "Outdated"
           }
               </span>
-              <span style="opacity:0.7"> ${p.version} → ${latest || "—"}</span>
-              ${caption ? `<span style="opacity:0.7"> ${escapeHtml(caption)}</span>` : ""}
-              ${updateButton}
+              <span style="opacity:0.7"> ${escapeHtml(p.version)} → ${escapeHtml(latest || "—")}</span>
             </summary>
             <ul>${projectList}</ul>
+            ${updateButton}
           </details>
         `;
       })
@@ -471,32 +490,74 @@ export class HealthDashboardPanel {
       font-family: var(--vscode-font-family);
       color: var(--vscode-foreground);
       background-color: var(--vscode-editor-background);
-      padding: 20px;
+      padding: 20px 24px 32px;
       margin: 0;
     }
-    h1 { font-size: 1.4rem; margin-bottom: 16px; }
-    h2 { font-size: 1.1rem; margin: 24px 0 10px; }
+    .dash-head { margin-bottom: 18px; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+    .scanned { margin: 4px 0 0; font-size: 0.8rem; opacity: 0.7; }
+    h2 { font-size: 1.05rem; margin: 24px 0 10px; }
     .cards {
       display: flex;
-      gap: 16px;
-      margin-bottom: 20px;
+      gap: 10px;
+      margin-bottom: 16px;
       flex-wrap: wrap;
     }
     .card {
+      position: relative;
+      overflow: hidden;
       background: var(--vscode-editorWidget-background);
       border: 1px solid var(--vscode-widget-border);
-      border-radius: 6px;
-      padding: 14px 18px;
-      min-width: 130px;
+      border-radius: 8px;
+      padding: 12px 14px 12px 16px;
+      min-width: 112px;
     }
-    .card-title { font-size: 0.8rem; opacity: 0.75; margin-bottom: 4px; }
-    .sources { margin: -8px 0 16px; font-size: 0.9rem; color: var(--vscode-foreground); }
-    .card-value { font-size: 1.5rem; font-weight: 600; }
-    .vulnerable { color: #f14c4c; }
-    .outdated { color: #cca700; }
-    .healthy { color: #89d185; }
-    .view-switch { display: flex; gap: 8px; margin-bottom: 16px; }
-    .view-switch .active { outline: 2px solid var(--vscode-focusBorder); }
+    .card::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: var(--vscode-foreground);
+      opacity: 0.28;
+    }
+    .tone-vuln::before { background: var(--vscode-errorForeground); opacity: 1; }
+    .tone-out::before { background: var(--vscode-editorWarning-foreground); opacity: 1; }
+    .tone-dep::before { background: var(--vscode-charts-purple, var(--vscode-foreground)); opacity: 1; }
+    .tone-ok::before { background: var(--vscode-testing-iconPassed, var(--vscode-charts-green, var(--vscode-foreground))); opacity: 1; }
+    .tone-info::before { background: var(--vscode-charts-blue, var(--vscode-textLink-foreground)); opacity: 1; }
+    .card-title {
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      opacity: 0.7;
+      margin-bottom: 4px;
+    }
+    .sources { margin: 0 0 14px; font-size: 0.85rem; color: var(--vscode-foreground); }
+    .card-value { font-size: 1.45rem; font-weight: 650; line-height: 1.1; }
+    .vulnerable { color: var(--vscode-errorForeground); }
+    .outdated { color: var(--vscode-editorWarning-foreground); }
+    .healthy { color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, var(--vscode-foreground))); }
+    .deprecated { color: var(--vscode-charts-purple, var(--vscode-foreground)); }
+    .conflicts { color: var(--vscode-textLink-foreground); }
+    .view-switch { display: flex; gap: 0; margin-bottom: 16px; }
+    .view-switch button {
+      margin: 0;
+      background: transparent;
+      color: var(--vscode-foreground);
+      border: 1px solid var(--vscode-widget-border);
+      border-radius: 0;
+      padding: 6px 12px;
+    }
+    .view-switch button + button { border-left: none; }
+    .view-switch button:first-child { border-radius: 6px 0 0 6px; }
+    .view-switch button:last-child { border-radius: 0 6px 6px 0; }
+    .view-switch .active {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      outline: none;
+    }
     .row-btn {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
@@ -533,29 +594,33 @@ export class HealthDashboardPanel {
       font-weight: 600;
     }
     .badge-vuln {
-      background: #f14c4c;
-      color: #fff;
+      background: var(--vscode-inputValidation-errorBackground);
+      color: var(--vscode-errorForeground);
+      border: 1px solid var(--vscode-inputValidation-errorBorder);
     }
     .badge-out {
-      background: #cca700;
-      color: #000;
+      background: var(--vscode-inputValidation-warningBackground);
+      color: var(--vscode-editorWarning-foreground);
+      border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
     }
     .badge-dep {
-       background: #c586c0;
-      color: #fff;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      border: 1px solid var(--vscode-widget-border);
     }
     table {
       width: 100%;
       border-collapse: collapse;
       font-size: 0.9rem;
-      margin-bottom: 16px;
+      margin: 8px 0 4px;
     }
     th, td {
       text-align: left;
       padding: 8px 10px;
       border-bottom: 1px solid var(--vscode-widget-border);
     }
-    th { opacity: 0.7; font-weight: 500; }
+    tbody tr:hover td { background: var(--vscode-list-hoverBackground); }
+    th { opacity: 0.7; font-weight: 500; font-size: 0.75rem; letter-spacing: 0.03em; text-transform: uppercase; }
     button {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
@@ -577,15 +642,17 @@ export class HealthDashboardPanel {
     }
     .safe-actions button { margin-bottom: 0; }
     details {
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       border: 1px solid var(--vscode-widget-border);
-      border-radius: 6px;
-      padding: 8px 12px;
+      border-radius: 8px;
+      padding: 8px 12px 10px;
+      background: var(--vscode-editorWidget-background);
     }
     summary {
       cursor: pointer;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
+    .row-btn { margin-bottom: 0; }
     .filters {
       display: flex;
       gap: 8px;
@@ -607,32 +674,35 @@ export class HealthDashboardPanel {
   </style>
 </head>
 <body>
-  <h1>PackageHub Health Dashboard</h1>
+  <header class="dash-head">
+    <h1>PackageHub Health Dashboard</h1>
+    ${scannedText ? `<p class="scanned">${escapeHtml(scannedText)}</p>` : ""}
+  </header>
 
   <div class="cards">
-    <div class="card">
+    <div class="card tone-vuln">
       <div class="card-title">Vulnerable</div>
       <div class="card-value vulnerable">${vulnerableCount}</div>
     </div>
-    <div class="card">
+    <div class="card tone-out">
       <div class="card-title">Outdated</div>
       <div class="card-value outdated">${outdatedCount}</div>
     </div>
-    <div class="card">
+    <div class="card tone-dep">
       <div class="card-title">Deprecated</div>
-    <div class="card-value" style="color:#c586c0;">${deprecatedCount}</div>
+      <div class="card-value deprecated">${deprecatedCount}</div>
     </div>
-    <div class="card">
+    <div class="card ${vulnerableCount + outdatedCount + deprecatedCount === 0 && !auditDataGap ? "tone-ok" : "tone-out"}">
       <div class="card-title">Status</div>
-      <div class="card-value ${vulnerableCount + outdatedCount + deprecatedCount === 0 ? "healthy" : ""}">
-        ${vulnerableCount + outdatedCount + deprecatedCount === 0 ? "Healthy" : "Needs Attention"}
+      <div class="card-value ${vulnerableCount + outdatedCount + deprecatedCount === 0 && !auditDataGap ? "healthy" : ""}">
+        ${vulnerableCount + outdatedCount + deprecatedCount === 0 && !auditDataGap ? "Healthy" : "Needs Attention"}
       </div>
     </div>
-    <div class="card">
+    <div class="card tone-info">
       <div class="card-title">Conflicts</div>
-      <div class="card-value" style="color:#4fc1ff;">${conflictCount}</div>
+      <div class="card-value conflicts">${conflictCount}</div>
     </div>
-    <div class="card">
+    <div class="card ${hasCpm ? "tone-ok" : ""}">
       <div class="card-title">CPM</div>
       <div class="card-value ${hasCpm ? "healthy" : ""}">
         ${hasCpm ? "Enabled" : "Not used"}
@@ -641,6 +711,7 @@ export class HealthDashboardPanel {
   </div>
 
   ${sourcesText ? `<p class="sources">${sourcesText}</p>` : ""}
+  ${auditDataGap ? `<p class="sources">audit kaynağı vulnerability verisi vermedi</p>` : ""}
 
   <div class="safe-actions">
     <button onclick="refresh()">Refresh Scan</button>

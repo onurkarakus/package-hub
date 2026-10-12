@@ -16,6 +16,7 @@ export class ScanState {
     private static hasCpm = false;
     private static centralVersions = new Map<string, string>();
     private static packageSources: PackageSourceState | undefined;
+    private static auditDataGap = false;
 
     static setCpm(hasCpm: boolean) {
         this.hasCpm = hasCpm;
@@ -33,6 +34,31 @@ export class ScanState {
         return this.packageSources;
     }
 
+    static setAuditDataGap(value: boolean) {
+        this.auditDataGap = value;
+    }
+
+    static hasAuditDataGap(): boolean {
+        return this.auditDataGap;
+    }
+
+    static statusBarLabel(): { healthy: boolean; text: string } {
+        const vulnerable = this.getVulnerable().length;
+        const outdated = this.getOutDated().length;
+        const deprecated = this.getDeprecated().length;
+        const healthy = vulnerable + outdated + deprecated === 0 && !this.auditDataGap;
+        if (healthy) {
+            return { healthy: true, text: "$(check) Packages healthy" };
+        }
+        if (vulnerable + outdated + deprecated === 0) {
+            return { healthy: false, text: "$(warning) Audit kaynağı" };
+        }
+        return {
+            healthy: false,
+            text: `$(warning) ${vulnerable} vuln · ${outdated} outdated · ${deprecated} deprecated`,
+        };
+    }
+
     static setCentralVersions(versions: { id: string; version: string }[]) {
         this.centralVersions = new Map(
             versions.map((item) => [item.id.toLowerCase(), item.version])
@@ -45,6 +71,10 @@ export class ScanState {
 
     static getCentralVersionCount(): number {
         return this.centralVersions.size;
+    }
+
+    static includePrerelease(): boolean {
+        return vscode.workspace.getConfiguration("packageHub").get<boolean>("includePrerelease") === true;
     }
 
     static setResults(
@@ -100,16 +130,17 @@ export class ScanState {
         versions: { version: string; projects: string[] }[];
     }[] {
         const all = [...this.getVulnerable(), ...this.outdated, ...this.deprecated];
-        const byId = new Map<string, Map<string, string[]>>();
+        const byId = new Map<string, { id: string; versions: Map<string, string[]> }>();
 
-        for (const p of all as any[]) {
+        for (const p of all) {
             const key = p.id.toLowerCase();
             if (!byId.has(key)) {
-                byId.set(key, new Map());
+                byId.set(key, { id: p.id, versions: new Map() });
             }
 
-            const versions = byId.get(key)!;
-            const versionByProject: Record<string, string> = p.versionByProject || {};
+            const versions = byId.get(key)!.versions;
+            const versionByProject: Record<string, string> =
+                (p as { versionByProject?: Record<string, string> }).versionByProject || {};
 
             const entries =
                 Object.keys(versionByProject).length > 0
@@ -128,11 +159,11 @@ export class ScanState {
 
         const conflicts = [];
 
-        for (const [id, versions] of byId) {
-            if (versions.size > 1) {
+        for (const bucket of byId.values()) {
+            if (bucket.versions.size > 1) {
                 conflicts.push({
-                    id,
-                    versions: Array.from(versions.entries()).map(([version, projects]) => ({
+                    id: bucket.id,
+                    versions: Array.from(bucket.versions.entries()).map(([version, projects]) => ({
                         version,
                         projects,
                     })),

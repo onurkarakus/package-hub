@@ -440,8 +440,8 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
     private async fetchLists(projectPath: string): Promise<VersionLists | undefined> {
         const [patch, latest] = await Promise.all([
-            this.dotnetCli.listOutdated(projectPath, true, "patch"),
-            this.dotnetCli.listOutdated(projectPath, true, "latest"),
+            this.dotnetCli.listOutdated(projectPath, true, "patch", undefined, ScanState.includePrerelease()),
+            this.dotnetCli.listOutdated(projectPath, true, "latest", undefined, ScanState.includePrerelease()),
         ]);
 
         const lists: VersionLists = { at: Date.now(), patch, latest };

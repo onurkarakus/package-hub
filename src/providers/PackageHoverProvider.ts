@@ -14,6 +14,26 @@ function escapeHtml(value: string): string {
         .replace(/>/g, "&gt;");
 }
 
+export function hoverActionChip(
+    icon: string,
+    label: string,
+    destination: string,
+    primary = false
+): string {
+    const color = primary
+        ? "var(--vscode-button-foreground)"
+        : "var(--vscode-button-secondaryForeground)";
+    const background = primary
+        ? "var(--vscode-button-background)"
+        : "var(--vscode-button-secondaryBackground)";
+    const style = `color:${color};background-color:${background};border-radius:4px;`;
+    const href = destination
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;");
+    return `<a href="${href}"><span style="${style}">&nbsp;$(${icon})&nbsp;${escapeHtml(label)}&nbsp;</span></a>`;
+}
+
 function sentence(value: string): string {
     const trimmed = value.trim();
     if (!trimmed) {
@@ -58,6 +78,7 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         const md = new vscode.MarkdownString();
         md.isTrusted = true;
         md.supportHtml = true;
+        md.supportThemeIcons = true;
 
         const lines: string[] = [];
         const versionText = `\`${escapeHtml(currentVersion || "unknown")}\`${usesCentral ? " · CPM" : ""}`;
@@ -101,18 +122,26 @@ export class PackageHoverProvider implements vscode.HoverProvider {
                 peek
             )
             : undefined;
-        const links = [
+        const updates = [
             this.versionLink("patch", packageId, projectName, peek, explanation.advisoryUrl),
             this.versionLink("latest", packageId, projectName, peek, explanation.advisoryUrl),
             ...(fixedLink ? [fixedLink] : []),
+        ];
+        const others = [
             explanation.advisoryUrl
-                ? `[Open Advisory](${explanation.advisoryUrl})`
-                : "[Open Advisory](command:packageHub.openAdvisory)",
+                ? hoverActionChip("link-external", "Open Advisory", explanation.advisoryUrl)
+                : hoverActionChip("link-external", "Open Advisory", "command:packageHub.openAdvisory"),
             this.whyLink(packageId, projectName),
-            `[Ignore](command:packageHub.ignorePackage?${encodeURIComponent(JSON.stringify(packageId))})`,
+            hoverActionChip(
+                "eye-closed",
+                "Ignore",
+                `command:packageHub.ignorePackage?${encodeURIComponent(JSON.stringify(packageId))}`
+            ),
             this.removeLink(packageId, projectName),
         ];
-        lines.push(...links);
+        lines.push("");
+        lines.push(updates.join(" &nbsp; "));
+        lines.push(others.join(" &nbsp; "));
 
         md.appendMarkdown(lines.join("<br>"));
         return new vscode.Hover(md);
@@ -230,12 +259,7 @@ export class PackageHoverProvider implements vscode.HoverProvider {
             return undefined;
         }
 
-        return this.updateLink(
-            `Update to first fixed version ${fixed}, advisory closes`,
-            packageId,
-            fixed,
-            projectName
-        );
+        return this.updateLink("shield", `First fixed ${fixed}`, packageId, fixed, projectName);
     }
 
     private versionLink(
@@ -246,45 +270,63 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         advisoryUrl?: string
     ): string {
         const version = channel === "patch" ? peek.patch : peek.latest;
-        const label = channel === "patch" ? "Update to highest patch" : "Update to latest";
+        const icon = channel === "patch" ? "arrow-circle-up" : "tag";
+        const label = channel === "patch" ? "Highest patch" : "Latest";
         if (peek.ready && version) {
-            const verdict = advisoryVerdict(packageId, advisoryUrl, version);
-            const suffix = verdict === "open"
-                ? ", advisory stays open"
-                : verdict === "closed"
-                    ? ", advisory closes"
-                    : "";
-            const gate = channel === "latest" && latestReleasePreferred(packageId, version) === false
-                ? ", younger than the age gate"
-                : "";
-            return this.updateLink(`${label} ${version}${suffix}${gate}`, packageId, version, projectName);
+            return this.updateLink(
+                icon,
+                `${label} ${version}`,
+                packageId,
+                version,
+                projectName,
+                channel === "patch"
+            );
         }
 
         const message = peek.ready
             ? `${packageId} için ${channel} sürümü yok. Güncelleme başlatılmadı.`
             : "Patch listesi henüz hazır değil. Güncelleme başlatılmadı.";
-        return `[${label}](command:packageHub.quickFixBlocked?${encodeURIComponent(JSON.stringify(message))})`;
+        return hoverActionChip(
+            icon,
+            label,
+            `command:packageHub.quickFixBlocked?${encodeURIComponent(JSON.stringify(message))}`
+        );
     }
 
     private removeLink(packageId: string, projectName?: string): string {
         const args = projectName ? { packageId, projectName } : { packageId };
-        return `[Remove Package](command:packageHub.removePackage?${encodeURIComponent(JSON.stringify(args))})`;
+        return hoverActionChip(
+            "trash",
+            "Remove",
+            `command:packageHub.removePackage?${encodeURIComponent(JSON.stringify(args))}`
+        );
     }
 
     private whyLink(packageId: string, projectName?: string): string {
         const args = projectName ? { packageId, projectName } : { packageId };
-        return `[Why is this here?](command:packageHub.whyPackage?${encodeURIComponent(JSON.stringify(args))})`;
+        return hoverActionChip(
+            "question",
+            "Why",
+            `command:packageHub.whyPackage?${encodeURIComponent(JSON.stringify(args))}`
+        );
     }
 
     private updateLink(
+        icon: string,
         label: string,
         packageId: string,
         version: string,
-        projectName?: string
+        projectName?: string,
+        primary = false
     ): string {
         const args = projectName
             ? { packageId, version, projectName }
             : { packageId, version };
-        return `[${label}](command:packageHub.updateVulnerable?${encodeURIComponent(JSON.stringify(args))})`;
+        return hoverActionChip(
+            icon,
+            label,
+            `command:packageHub.updateVulnerable?${encodeURIComponent(JSON.stringify(args))}`,
+            primary
+        );
     }
 }

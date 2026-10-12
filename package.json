@@ -29,11 +29,13 @@
     "commands": [
       {
         "command": "packageHub.scanWorkspace",
-        "title": "PackageHub: Scan Workspace"
+        "title": "PackageHub: Scan Workspace",
+        "icon": "$(search)"
       },
       {
         "command": "packageHub.showHealthDashboard",
-        "title": "PackageHub: Show Health Dashboard"
+        "title": "PackageHub: Show Health Dashboard",
+        "icon": "$(dashboard)"
       },
       {
         "command": "packageHub.explainSelectedPackage",
@@ -66,6 +68,10 @@
       {
         "command": "packageHub.copyHealthReport",
         "title": "PackageHub: Copy Health Report"
+      },
+      {
+        "command": "packageHub.copyVulnerabilityReport",
+        "title": "PackageHub: Copy Vulnerability Report"
       },
       {
         "command": "packageHub.updateHighestPatch",
@@ -141,6 +147,11 @@
             "default": true,
             "description": "Workspace açılınca otomatik paket taraması yap"
           },
+          "packageHub.includePrerelease": {
+            "type": "boolean",
+            "default": false,
+            "description": "Eski paket listesinde ön sürümleri de göster. Kapalıdır. Açık taraması değişmez. Sonraki taramada uygulanır."
+          },
           "packageHub.minimumSeverity": {
             "type": "string",
             "enum": [
@@ -170,6 +181,18 @@
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "packageHub.scanWorkspace",
+          "when": "view == packageHubExplorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "packageHub.showHealthDashboard",
+          "when": "view == packageHubExplorer",
+          "group": "navigation@2"
+        }
+      ],
       "view/item/context": [
         {
           "command": "packageHub.updateSelectedPackage",

@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import * as vscode from "vscode";
 import { PackageInfo } from "../models/PackageInfo";
+import { logger } from "../utils/logger";
 import { pbkdf2 } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -80,13 +81,15 @@ export class DotnetCli {
         targetPath: string,
         includeTransitive: boolean = true,
         channel: "latest" | "patch" | "minor" = "latest",
-        signal?: AbortSignal
+        signal?: AbortSignal,
+        includePrerelease = false
     ): Promise<PackageInfo[]> {
         const flags = [
             "--outdated",
             includeTransitive ? "--include-transitive" : "",
             channel === "patch" ? "--highest-patch" : "",
             channel === "minor" ? "--highest-minor" : "",
+            includePrerelease ? "--include-prerelease" : "",
             "--format json",
         ].filter(Boolean).join(" ");
 
@@ -214,7 +217,7 @@ export class DotnetCli {
    * Not: Microsoft zaman zaman JSON formatını değiştirebiliyor.
    * Bu parser şu anki (2025-2026) formata göre yazıldı.
    */
-    private parsePackageList(
+    parsePackageList(
         jsonOutput: string,
         type: "vulnerable" | "outdated" | "deprecated"
     ): PackageInfo[] {
@@ -330,8 +333,8 @@ export class DotnetCli {
             }
 
             return Array.from(packageMap.values());
-        } catch (error) {
-            console.error("JSON parse hatası:", error);
+        } catch (error: any) {
+            logger.error(`JSON parse hatası: ${error?.message || error}`);
             return [];
         }
     }

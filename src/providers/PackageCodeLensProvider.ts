@@ -4,6 +4,17 @@ import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { readPackageRef } from "../utils/nugetAudit";
 import { PackageCodeActionProvider } from "./PackageCodeActionProvider";
 
+export function resolveLensPatch(
+    stored: string | undefined,
+    peeked: { ready: boolean; patch?: string }
+): string | undefined {
+    if (peeked.ready) {
+        return peeked.patch;
+    }
+
+    return stored;
+}
+
 export class PackageCodeLensProvider implements vscode.CodeLensProvider, vscode.Disposable {
     private readonly emitter = new vscode.EventEmitter<void>();
     readonly onDidChangeCodeLenses = this.emitter.event;
@@ -47,8 +58,9 @@ export class PackageCodeLensProvider implements vscode.CodeLensProvider, vscode.
             }
 
             const currentVersion = ref.version || found.vulnerable?.version || found.outdated?.version;
+            const stored = found.vulnerable?.highestPatch || found.outdated?.highestPatch;
             const peek = await this.versions.peekUpdateTargets(document, ref.id, currentVersion);
-            const patch = peek.ready ? peek.patch : undefined;
+            const patch = resolveLensPatch(stored, peek);
             const lens = this.lensFor(document, line, ref.id, found.vulnerable?.severity, patch, peek.ready);
             if (lens) {
                 lenses.push(lens);

@@ -2,6 +2,7 @@ export interface PackageInfo {
     id: string;
     version: string;
     latestVersion?: string;
+    highestPatch?: string;
     isVulnerable: boolean;
     isOutdated: boolean;
     isDeprecated: boolean;

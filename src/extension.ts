@@ -9,12 +9,21 @@ import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
 import { loadAdvisoryCatalog } from "./services/AdvisoryCatalog";
 import { loadReleaseAges } from "./services/ReleaseAge";
-import { attachTransitiveOrigins } from "./services/TransitiveOrigin";
+import { attachTransitiveOrigins, directProjectNames } from "./services/TransitiveOrigin";
 import { refreshCentralPackages } from "./services/CentralPackages";
 import { refreshNuGetSources } from "./services/NuGetSources";
+import { workspaceHasAuditDataGap } from "./services/AuditSourceNotice";
 import { restoreLastScan, saveLastScan } from "./services/LastScanStore";
 import { buildHealthReport } from "./services/HealthReport";
-import { isSafeChannelTarget, readPackageRef } from "./utils/nugetAudit";
+import { buildVulnerabilityReport } from "./services/VulnerabilityReport";
+import { chooseQuickFixVersions, isSafeChannelTarget, readPackageRef } from "./utils/nugetAudit";
+import {
+	classicSolutionPaths,
+	readSolutionProjects,
+	restoreTargetsForProjects,
+	slnxPaths,
+} from "./services/SolutionTargets";
+import { isPackageProjectFile, ScanGate } from "./services/ScanGate";
 import { PackageAuditDiagnostics } from "./providers/PackageAuditDiagnostics";
 import { PackageCodeActionProvider } from "./providers/PackageCodeActionProvider";
 import { PackageCodeLensProvider } from "./providers/PackageCodeLensProvider";
@@ -25,6 +34,7 @@ let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
 
 const PROJECT_SCAN_CONCURRENCY = 2;
+const scanGate = new ScanGate();
 
 function escapeXml(value: string): string {
 	return value
@@ -161,6 +171,7 @@ interface TargetScan {
 	vulnerable: any[];
 	outdated: any[];
 	deprecated: any[];
+	patch: any[];
 }
 
 async function scanOneTarget(
@@ -181,8 +192,9 @@ async function scanOneTarget(
 
 	const settled = await Promise.allSettled([
 		track("vulnerable", cli.listVulnerable(targetPath, true, signal)),
-		track("outdated", cli.listOutdated(targetPath, false, "latest", signal)),
+		track("outdated", cli.listOutdated(targetPath, false, "latest", signal, ScanState.includePrerelease())),
 		track("deprecated", cli.listDeprecated(targetPath, signal)),
+		track("patch", cli.listOutdated(targetPath, false, "patch", signal, ScanState.includePrerelease())),
 	]);
 
 	if (settled.some((result) =>
@@ -192,7 +204,7 @@ async function scanOneTarget(
 		throw new Error("`dotnet` komutu bulunamadı. .NET SDK yüklü mü?");
 	}
 
-	const names = ["vulnerable", "outdated", "deprecated"] as const;
+	const names = ["vulnerable", "outdated", "deprecated", "patch"] as const;
 	const lists = names.map((name, index) => {
 		const result = settled[index];
 		if (result.status === "fulfilled") {
@@ -209,7 +221,52 @@ async function scanOneTarget(
 		vulnerable: lists[0],
 		outdated: lists[1],
 		deprecated: lists[2],
+		patch: lists[3],
 	};
+}
+
+function attachHighestPatch(groups: any[][], patch: any[]): void {
+	const byId = new Map<string, string>();
+	for (const pkg of patch) {
+		if (pkg?.id && pkg.latestVersion) {
+			byId.set(String(pkg.id).toLowerCase(), String(pkg.latestVersion));
+		}
+	}
+
+	for (const group of groups) {
+		for (const pkg of group) {
+			const candidate = byId.get(String(pkg.id).toLowerCase());
+			pkg.highestPatch = chooseQuickFixVersions(pkg.version, candidate, undefined).patch;
+		}
+	}
+}
+
+async function restoreForProjects(projectPaths: string[]): Promise<void> {
+	const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
+	for (const skipped of slnxPaths(found)) {
+		logger.info(`.slnx atlandı: ${skipped}`);
+	}
+
+	const solutions = classicSolutionPaths(found);
+	if (projectPaths.length === 0) {
+		for (const solutionPath of solutions) {
+			logger.info(`Restore: ${solutionPath}`);
+			await dotnetCli.restore(solutionPath);
+		}
+		return;
+	}
+
+	const membership = await readSolutionProjects(solutions);
+	for (const solution of membership) {
+		if (solution.error) {
+			logger.error(`Solution okunamadı (${solution.solutionPath}): ${solution.error}`);
+		}
+	}
+
+	for (const target of restoreTargetsForProjects(membership, projectPaths)) {
+		logger.info(`Restore: ${target}`);
+		await dotnetCli.restore(target);
+	}
 }
 
 async function runPool(
@@ -266,7 +323,13 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 				progress.report({ message: `${label} okunuyor… ${projectName}` });
 
 				try {
-					const listed = await dotnetCli.listOutdated(project.fsPath, false, channel);
+					const listed = await dotnetCli.listOutdated(
+						project.fsPath,
+						false,
+						channel,
+						undefined,
+						ScanState.includePrerelease()
+					);
 					for (const pkg of listed) {
 						if (!pkg.latestVersion || !isSafeChannelTarget(pkg.version, pkg.latestVersion, channel)) {
 							continue;
@@ -334,16 +397,8 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 				}
 
 				progress.report({ message: "Restore çalışıyor..." });
-				const solutions = (await workspaceScanner.findSolutions()).filter((item) =>
-					item.fsPath.toLowerCase().endsWith(".sln")
-				);
-				if (solutions.length > 0) {
-					await dotnetCli.restore(solutions[0].fsPath);
-				} else {
-					for (const project of projects) {
-						await dotnetCli.restore(project.fsPath);
-					}
-				}
+				const updatedProjects = [...new Set(targets.map((target) => target.projectPath))];
+				await restoreForProjects(updatedProjects);
 
 				vscode.window.showInformationMessage(`${label}: ${targets.length} hedef güncellendi.`);
 				await vscode.commands.executeCommand("packageHub.scanWorkspace");
@@ -358,17 +413,11 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 }
 
 function paintScanStatus(item: vscode.StatusBarItem): void {
-	const vulnerable = ScanState.getVulnerable();
-	const outdated = ScanState.getOutDated();
-	const deprecated = ScanState.getDeprecated();
-
-	if (vulnerable.length > 0 || outdated.length > 0) {
-		item.text = `$(warning) ${vulnerable.length} vuln · ${outdated.length} outdated · ${deprecated.length} deprecated`;
-		item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-	} else {
-		item.text = `$(check) Packages healthy`;
-		item.backgroundColor = undefined;
-	}
+	const status = ScanState.statusBarLabel();
+	item.text = status.text;
+	item.backgroundColor = status.healthy
+		? undefined
+		: new vscode.ThemeColor("statusBarItem.warningBackground");
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -391,12 +440,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Tree View
 	const treeProvider = new PackageHubTreeProvider();
-	context.subscriptions.push(
-		vscode.window.createTreeView("packageHubExplorer", {
-			treeDataProvider: treeProvider,
-			showCollapseAll: true,
-		})
-	);
+	const treeView = vscode.window.createTreeView("packageHubExplorer", {
+		treeDataProvider: treeProvider,
+		showCollapseAll: true,
+	});
+	treeProvider.attach(treeView);
+	context.subscriptions.push(treeView);
 
 	if (restoreLastScan(context.workspaceState)) {
 		paintScanStatus(statusBarItem);
@@ -417,7 +466,9 @@ export function activate(context: vscode.ExtensionContext) {
 		)
 	);
 	if (ScanState.getScannedAt()) {
-		codeLensProvider.refresh();
+		void auditDiagnostics.refresh().finally(() => {
+			codeLensProvider.refresh();
+		});
 	}
 
 	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
@@ -437,6 +488,13 @@ export function activate(context: vscode.ExtensionContext) {
 				? `Yaş kapısı: ${days} gün`
 				: "Yaş kapısı kapalı.");
 		}
+
+		if (event.affectsConfiguration("packageHub.includePrerelease")) {
+			logger.info(ScanState.includePrerelease()
+				? "Ön sürüm açık. Sonraki taramada uygulanır."
+				: "Ön sürüm kapalı. Sonraki taramada uygulanır.");
+			codeActionProvider.clearCache();
+		}
 	}));
 
 	void refreshCentralPackages(workspaceScanner)
@@ -454,6 +512,17 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 		.catch((error: any) => {
 			logger.error(`NuGet.config okunamadı: ${error.message}`);
+		});
+
+	void workspaceScanner.findProjects()
+		.then(async (projects) => {
+			const gap = await workspaceHasAuditDataGap(projects.map((project) => project.fsPath));
+			ScanState.setAuditDataGap(gap);
+			paintScanStatus(statusBarItem);
+			HealthDashboardPanel.refreshIfOpen();
+		})
+		.catch((error: any) => {
+			logger.error(`Audit kaynağı uyarısı okunamadı: ${error.message}`);
 		});
 
 	// Hover açıklamasıdır. Güncelleme linkleri ampulün önbelleğini okur, yeni dotnet çağrısı başlatmaz.
@@ -736,6 +805,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const explainCommand = vscode.commands.registerCommand(
 		"packageHub.explainSelectedPackage",
 		async () => {
+			try {
 			const editor = vscode.window.activeTextEditor;
 			if (!editor) {
 				vscode.window.showWarningMessage("Açık bir editör yok.");
@@ -797,12 +867,14 @@ export function activate(context: vscode.ExtensionContext) {
 					version: info.latestVersion,
 				});
 			}
+			} catch (error: any) {
+				logger.error(`Paket açıklanamadı: ${error?.message || error}`);
+				vscode.window.showErrorMessage("Paket açıklanamadı.");
+			}
 		}
 	);
 
-	const scanCommand = vscode.commands.registerCommand(
-		"packageHub.scanWorkspace",
-		async () => {
+	const performWorkspaceScan = async () => {
 			const workspaceRoot = workspaceScanner.getWorkspaceRoot();
 
 			if (!workspaceRoot) {
@@ -834,11 +906,13 @@ export function activate(context: vscode.ExtensionContext) {
 						let vulnerable: any[] = [];
 						let outdated: any[] = [];
 						let deprecated: any[] = [];
+						let patch: any[] = [];
 
-						// 1. Solution ara
-						const solutions = (await workspaceScanner.findSolutions()).filter((s) =>
-							s.fsPath.toLowerCase().endsWith(".sln")
-						);
+						const foundSolutions = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
+						for (const skipped of slnxPaths(foundSolutions)) {
+							logger.info(`.slnx atlandı: ${skipped}`);
+						}
+						const solutions = classicSolutionPaths(foundSolutions);
 
 						if (token.isCancellationRequested) {
 							logger.info("Tarama iptal edildi. Sonuç çizilmedi.");
@@ -846,15 +920,42 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						if (solutions.length > 0) {
-							const targetPath = solutions[0].fsPath;
-							const label = path.basename(targetPath);
-							logger.info(`Solution bulundu: ${targetPath}`);
-							progress.report({ message: `1/1 ${label}` });
+							logger.info(`${solutions.length} solution taranacak.`);
+							const allVulnerable: any[] = [];
+							const allOutdated: any[] = [];
+							const allDeprecated: any[] = [];
+							const allPatch: any[] = [];
 
-							const lists = await scanOneTarget(dotnetCli, targetPath, label, abort.signal);
-							vulnerable = lists.vulnerable;
-							outdated = lists.outdated;
-							deprecated = lists.deprecated;
+							await runPool(solutions.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
+								const targetPath = solutions[index];
+								const label = path.basename(targetPath);
+								progress.report({ message: `${index + 1}/${solutions.length} ${label}` });
+								logger.info(`Solution taranıyor: ${targetPath}`);
+
+								try {
+									const lists = await scanOneTarget(
+										dotnetCli,
+										targetPath,
+										label,
+										abort.signal
+									);
+									allVulnerable.push(...lists.vulnerable);
+									allOutdated.push(...lists.outdated);
+									allDeprecated.push(...lists.deprecated);
+									allPatch.push(...lists.patch);
+								} catch (solutionError: any) {
+									logger.error(`Solution taranamadı (${targetPath}): ${solutionError.message}`);
+									if (String(solutionError.message).includes("`dotnet` komutu bulunamadı")) {
+										abort.abort();
+										throw solutionError;
+									}
+								}
+							});
+
+							vulnerable = mergeById(allVulnerable);
+							outdated = mergeById(allOutdated);
+							deprecated = mergeById(allDeprecated);
+							patch = mergeById(allPatch);
 						} else {
 							// 2. Solution yoksa TÜM projeleri tara
 							const projects = await workspaceScanner.findProjects();
@@ -871,6 +972,7 @@ export function activate(context: vscode.ExtensionContext) {
 							const allVulnerable: any[] = [];
 							const allOutdated: any[] = [];
 							const allDeprecated: any[] = [];
+							const allPatch: any[] = [];
 
 							await runPool(projects.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
 								const project = projects[index];
@@ -888,6 +990,7 @@ export function activate(context: vscode.ExtensionContext) {
 									allVulnerable.push(...lists.vulnerable);
 									allOutdated.push(...lists.outdated);
 									allDeprecated.push(...lists.deprecated);
+									allPatch.push(...lists.patch);
 								} catch (projectError: any) {
 									logger.error(`Proje taranamadı (${project.fsPath}): ${projectError.message}`);
 									if (String(projectError.message).includes("`dotnet` komutu bulunamadı")) {
@@ -900,6 +1003,7 @@ export function activate(context: vscode.ExtensionContext) {
 							vulnerable = mergeById(allVulnerable);
 							outdated = mergeById(allOutdated);
 							deprecated = mergeById(allDeprecated);
+							patch = mergeById(allPatch);
 						}
 
 						if (token.isCancellationRequested) {
@@ -913,6 +1017,7 @@ export function activate(context: vscode.ExtensionContext) {
 								.get<string[]>("ignoredPackages") || []
 						).map((id) => id.toLowerCase());
 
+						attachHighestPatch([vulnerable, outdated], patch);
 						vulnerable = vulnerable.filter((p) => !ignored.includes(p.id.toLowerCase()));
 						outdated = outdated.filter((p) => !ignored.includes(p.id.toLowerCase()));
 						deprecated = deprecated.filter((p) => !ignored.includes(p.id.toLowerCase()));
@@ -944,7 +1049,6 @@ export function activate(context: vscode.ExtensionContext) {
 							logger.error(`Yaş kaydı okunamadı: ${ageError.message}`);
 						}
 
-						paintScanStatus(statusBarItem);
 						treeProvider.refresh();
 
 						try {
@@ -963,6 +1067,16 @@ export function activate(context: vscode.ExtensionContext) {
 						} catch (sourceError: any) {
 							logger.error(`NuGet.config okunamadı: ${sourceError.message}`);
 						}
+
+						try {
+							const noticed = await workspaceScanner.findProjects();
+							const gap = await workspaceHasAuditDataGap(noticed.map((project) => project.fsPath));
+							ScanState.setAuditDataGap(gap);
+						} catch (auditNoticeError: any) {
+							logger.error(`Audit kaynağı uyarısı okunamadı: ${auditNoticeError.message}`);
+						}
+
+						paintScanStatus(statusBarItem);
 
 						try {
 							await saveLastScan(context.workspaceState);
@@ -1034,6 +1148,23 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 				}
 			);
+	};
+
+	const scanCommand = vscode.commands.registerCommand(
+		"packageHub.scanWorkspace",
+		async () => {
+			if (!scanGate.begin()) {
+				logger.info("Tarama zaten sürüyor. Bittiğinde bir kez daha çalışacak.");
+				return;
+			}
+			try {
+				do {
+					await performWorkspaceScan();
+				} while (scanGate.end());
+			} catch (error) {
+				scanGate.forceIdle();
+				throw error;
+			}
 		}
 	);
 
@@ -1132,20 +1263,7 @@ export function activate(context: vscode.ExtensionContext) {
 						progress.report({ message: "Restore çalışıyor..." });
 
 						try {
-							const solutions = (await workspaceScanner.findSolutions()).filter((s) =>
-								s.fsPath.toLowerCase().endsWith(".sln")
-							);
-
-							if (solutions.length > 0) {
-								logger.info(`Restore solution: ${solutions[0].fsPath}`);
-								await dotnetCli.restore(solutions[0].fsPath);
-							} else {
-								for (const project of projectsToUpdate) {
-									logger.info(`Restore project: ${project.fsPath}`);
-									await dotnetCli.restore(project.fsPath);
-								}
-							}
-
+							await restoreForProjects(projectsToUpdate.map((project) => project.fsPath));
 							logger.info("Restore tamamlandı.");
 						} catch (restoreError: any) {
 							logger.error(`Restore hatası: ${restoreError.message}`);
@@ -1321,6 +1439,56 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	);
 
+	const revealPackageCommand = vscode.commands.registerCommand(
+		"packageHub.revealPackage",
+		async (args?: { packageId?: string }) => {
+			const packageId = typeof args?.packageId === "string" ? args.packageId.trim() : "";
+			if (!packageId) {
+				vscode.window.showWarningMessage("Paket seçilemedi.");
+				return;
+			}
+
+			const found = ScanState.findPackage(packageId);
+			const info = found.vulnerable || found.outdated || found.deprecated;
+			const preferred = directProjectNames(info).map((name) => name.toLowerCase());
+			const projects = await workspaceScanner.findProjects();
+			const ordered = [...projects].sort((left, right) => {
+				const leftName = workspaceScanner.getProjectName(left).toLowerCase();
+				const rightName = workspaceScanner.getProjectName(right).toLowerCase();
+				const leftRank = preferred.indexOf(leftName);
+				const rightRank = preferred.indexOf(rightName);
+				const leftOrder = leftRank === -1 ? preferred.length : leftRank;
+				const rightOrder = rightRank === -1 ? preferred.length : rightRank;
+				return leftOrder - rightOrder || leftName.localeCompare(rightName);
+			});
+
+			for (const project of ordered) {
+				let document: vscode.TextDocument;
+				try {
+					document = await vscode.workspace.openTextDocument(project);
+				} catch {
+					continue;
+				}
+
+				const line = packageReferenceLine(document.getText(), packageId);
+				if (line < 0) {
+					continue;
+				}
+
+				const editor = await vscode.window.showTextDocument(document, { preview: true });
+				const position = new vscode.Position(line, 0);
+				editor.selection = new vscode.Selection(position, position);
+				editor.revealRange(
+					new vscode.Range(position, position),
+					vscode.TextEditorRevealType.InCenter
+				);
+				return;
+			}
+
+			await DependencyGraphPanel.show(packageId);
+		}
+	);
+
 	const showPackageInfoCommand = vscode.commands.registerCommand(
 		"packageHub.showPackageInfo",
 		async (item?: any) => {
@@ -1377,33 +1545,16 @@ export function activate(context: vscode.ExtensionContext) {
 					progress.report({ message: "Restore çalışıyor..." });
 
 					try {
-						const solutions = (await workspaceScanner.findSolutions()).filter((s) =>
-							s.fsPath.toLowerCase().endsWith(".sln")
-						);
-
-						if (solutions.length > 0) {
-							// Solution varsa onu restore et
-							const solutionPath = solutions[0].fsPath;
-							logger.info(`Restore solution: ${solutionPath}`);
-							await dotnetCli.restore(solutionPath);
-						} else {
-							// Solution yoksa tüm projeleri restore et
-							const projects = await workspaceScanner.findProjects();
-							if (projects.length === 0) {
-								vscode.window.showErrorMessage(
-									"Restore edilecek .sln veya .csproj bulunamadı."
-								);
-								return;
-							}
-
-							for (const project of projects) {
-								progress.report({
-									message: `Restore: ${workspaceScanner.getProjectName(project)}`,
-								});
-								logger.info(`Restore project: ${project.fsPath}`);
-								await dotnetCli.restore(project.fsPath);
-							}
+						const projects = await workspaceScanner.findProjects();
+						const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
+						if (classicSolutionPaths(found).length === 0 && projects.length === 0) {
+							vscode.window.showErrorMessage(
+								"Restore edilecek .sln veya .csproj bulunamadı."
+							);
+							return;
 						}
+
+						await restoreForProjects(projects.map((project) => project.fsPath));
 
 						vscode.window.showInformationMessage("Restore tamamlandı.");
 						logger.info("Restore tamamlandı.");
@@ -1541,8 +1692,38 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			await vscode.env.clipboard.writeText(markdown);
+			try {
+				await vscode.env.clipboard.writeText(markdown);
+			} catch (error: any) {
+				logger.error(`Sağlık raporu kopyalanamadı: ${error?.message || error}`);
+				vscode.window.showErrorMessage("Sağlık raporu kopyalanamadı.");
+				return;
+			}
 			vscode.window.showInformationMessage("Sağlık raporu panoya kopyalandı.");
+		}
+	);
+
+	const copyVulnerabilityReportCommand = vscode.commands.registerCommand(
+		"packageHub.copyVulnerabilityReport",
+		async () => {
+			const markdown = buildVulnerabilityReport();
+			if (markdown === undefined) {
+				vscode.window.showInformationMessage("Scan first");
+				return;
+			}
+			if (markdown === "") {
+				vscode.window.showInformationMessage("Açık yok.");
+				return;
+			}
+
+			try {
+				await vscode.env.clipboard.writeText(markdown);
+			} catch (error: any) {
+				logger.error(`Açık raporu kopyalanamadı: ${error?.message || error}`);
+				vscode.window.showErrorMessage("Açık raporu kopyalanamadı.");
+				return;
+			}
+			vscode.window.showInformationMessage("Açık raporu panoya kopyalandı.");
 		}
 	);
 
@@ -1587,12 +1768,14 @@ export function activate(context: vscode.ExtensionContext) {
 		updateLinePatchCommand,
 		updateLineLatestCommand,
 		openLineAdvisoryCommand,
+		revealPackageCommand,
 		showPackageInfoCommand,
 		openNugetCommand,
 		restoreAllCommand,
 		showGraphCommand,
 		whyPackageCommand,
 		copyHealthReportCommand,
+		copyVulnerabilityReportCommand,
 		explainCommand,
 		ignorePackageCommand,
 		unignorePackageCommand,
@@ -1602,15 +1785,46 @@ export function activate(context: vscode.ExtensionContext) {
 		logger
 	);
 
+	context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
+		if (document.uri.scheme !== "file") {
+			return;
+		}
+		if (!vscode.workspace.getWorkspaceFolder(document.uri)) {
+			return;
+		}
+		if (!isPackageProjectFile(document.uri.fsPath)) {
+			return;
+		}
+		logger.info(`Kayıt sonrası tarama: ${document.uri.fsPath}`);
+		void vscode.commands.executeCommand("packageHub.scanWorkspace");
+	}));
+
 	const scanOnStartup = vscode.workspace
 		.getConfiguration("packageHub")
 		.get<boolean>("scanOnStartup", true);
 
-	if (scanOnStartup && workspaceScanner.getWorkspaceRoot()) {
+	if (
+		process.env.PACKAGEHUB_DISABLE_STARTUP_SCAN !== "1"
+		&& scanOnStartup
+		&& workspaceScanner.getWorkspaceRoot()
+	) {
 		setTimeout(() => {
 			vscode.commands.executeCommand("packageHub.scanWorkspace");
 		}, 2000);
 	}
+}
+
+function packageReferenceLine(text: string, packageId: string): number {
+	const lines = text.split(/\r?\n/);
+	const id = packageId.toLowerCase();
+	for (let index = 0; index < lines.length; index += 1) {
+		const ref = readPackageRef(lines[index]);
+		if (ref && ref.kind === "reference" && ref.id.toLowerCase() === id) {
+			return index;
+		}
+	}
+
+	return -1;
 }
 
 export function deactivate() {

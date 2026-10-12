@@ -1,3 +1,4 @@
 {
-    "packageHub.ignoredPackages": []
+    "packageHub.ignoredPackages": [],
+    "dotnet.defaultSolution": "Included.sln"
 }
