@@ -96,7 +96,7 @@ export async function refreshNuGetSources(scanner: WorkspaceScanner): Promise<vo
 
     if (files.length === 0) {
         ScanState.setPackageSources({ found: false, unreadable: false, names: [] });
-        logger.info("NuGet.config yok.");
+        logger.info("No NuGet.config.");
         return;
     }
 
@@ -105,7 +105,7 @@ export async function refreshNuGetSources(scanner: WorkspaceScanner): Promise<vo
         try {
             parts.push(parsePackageSourceFile(await fs.readFile(file.fsPath, "utf8")));
         } catch (error: any) {
-            logger.error(`NuGet.config okunamadı (${file.fsPath}): ${error.message}`);
+            logger.error(`Could not read NuGet.config (${file.fsPath}): ${error.message}`);
         }
     }
 
@@ -116,5 +116,5 @@ export async function refreshNuGetSources(scanner: WorkspaceScanner): Promise<vo
 
     const names = mergePackageSourceNames(parts);
     ScanState.setPackageSources({ found: true, unreadable: false, names });
-    logger.info(names.length > 0 ? `Kaynak: ${names.join(", ")}` : "Kaynak yok.");
+    logger.info(names.length > 0 ? `Source: ${names.join(", ")}` : "No sources.");
 }

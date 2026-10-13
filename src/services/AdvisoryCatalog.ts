@@ -82,12 +82,31 @@ export function advisoryLabel(advisoryUrl: string | undefined): string {
     return match ? match[0] : "this advisory";
 }
 
+export function replaceAdvisoryRecords(
+    entries: { packageId: string; url: string; versions: string }[]
+): void {
+    records.clear();
+    for (const entry of entries) {
+        const key = entry.packageId.toLowerCase();
+        const list = records.get(key) ?? [];
+        list.push({ url: entry.url, versions: entry.versions });
+        records.set(key, list);
+    }
+    ready = true;
+}
+
+export function clearAdvisoryRecords(): void {
+    records.clear();
+    ready = false;
+    pending = undefined;
+}
+
 export function loadAdvisoryCatalog(): Promise<void> {
     if (!pending) {
         pending = fetchCatalog()
             .then(() => {
                 ready = true;
-                logger.info("Advisory kaydı hazır.");
+                logger.info("Advisory record is ready.");
             })
             .catch((error) => {
                 pending = undefined;
@@ -107,12 +126,12 @@ async function fetchCatalog(): Promise<void> {
     );
     const indexUrl = resource?.["@id"];
     if (!indexUrl) {
-        throw new Error("VulnerabilityInfo kaynağı yok.");
+        throw new Error("No VulnerabilityInfo source.");
     }
 
     const pages = await fetchJson(indexUrl);
     if (!Array.isArray(pages)) {
-        throw new Error("Vulnerability index dizi değil.");
+        throw new Error("Vulnerability index is not an array.");
     }
 
     for (const page of pages as any[]) {

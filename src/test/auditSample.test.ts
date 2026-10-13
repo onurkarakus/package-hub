@@ -27,6 +27,33 @@ suite("Audit sample", function () {
             vscode.workspace.getConfiguration("packageHub").get("includePrerelease"),
             true
         );
+        assert.deepStrictEqual(extension.packageJSON.activationEvents, [
+            "onLanguage:csharp",
+            "workspaceContains:**/*.{csproj,sln,props}",
+        ]);
+    });
+
+    test("the marketplace icon is a png and the activity bar stays a codicon", async () => {
+        const extension = vscode.extensions.getExtension("packagehub.package-hub");
+        assert.ok(extension);
+        const manifest = extension.packageJSON;
+        assert.strictEqual(manifest.icon, "media/packagehub-logo.png");
+        assert.strictEqual(manifest.galleryBanner.color, "#184E57");
+        assert.strictEqual(manifest.galleryBanner.theme, "dark");
+        assert.strictEqual(
+            manifest.contributes.viewsContainers.activitybar[0].icon,
+            "$(package)"
+        );
+
+        const iconPath = path.join(extension.extensionPath, manifest.icon);
+        const bytes = await fs.readFile(iconPath);
+        assert.strictEqual(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+        assert.ok(bytes.readUInt32BE(16) >= 128);
+        assert.ok(bytes.readUInt32BE(20) >= 128);
+
+        const ignore = await fs.readFile(path.join(extension.extensionPath, ".vscodeignore"), "utf8");
+        assert.strictEqual(ignore.includes("media/"), false);
+        assert.strictEqual(ignore.includes("*.png"), false);
     });
 
     test("the sample graph keeps Newtonsoft direct in AuditQuickFix", async () => {
@@ -65,14 +92,14 @@ suite("Audit sample", function () {
                 message.includes("Package 'Newtonsoft.Json' 12.0.1 has a known high severity vulnerability")
                 && !message.includes("transitive")
             ),
-            `AuditQuickFix tanı: ${auditMessages.join(" | ")}`
+            `AuditQuickFix diagnostics: ${auditMessages.join(" | ")}`
         );
         assert.ok(
             consumerMessages.some((message) =>
                 message.includes("Package 'Newtonsoft.Json' 12.0.1 is transitive via AuditQuickFix")
-                && !message.includes("paket grafiğinde kalmış olabilir")
+                && !message.includes("this warning may be left over in the package graph")
             ),
-            `Consumer tanı: ${consumerMessages.join(" | ")}`
+            `Consumer diagnostics: ${consumerMessages.join(" | ")}`
         );
 
         assert.strictEqual(await fs.readFile(propsUri.fsPath, "utf8"), propsBefore);

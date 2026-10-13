@@ -43,7 +43,7 @@ export async function attachTransitiveOrigins(
 
 function originCaption(origin: TransitiveOrigin): string {
     if (origin.absentFromGraph) {
-        return "bu uyarı paket grafiğinde kalmış olabilir";
+        return "this warning may be left over in the package graph";
     }
     if (origin.broughtBy) {
         return `transitive via ${origin.broughtBy}`;

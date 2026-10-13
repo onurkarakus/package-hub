@@ -284,8 +284,8 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         }
 
         const message = peek.ready
-            ? `${packageId} için ${channel} sürümü yok. Güncelleme başlatılmadı.`
-            : "Patch listesi henüz hazır değil. Güncelleme başlatılmadı.";
+            ? `No ${channel} version for ${packageId}. The update was not started.`
+            : "The patch list is not ready yet. The update was not started.";
         return hoverActionChip(
             icon,
             label,

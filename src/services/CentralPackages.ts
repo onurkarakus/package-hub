@@ -36,7 +36,7 @@ export async function refreshCentralPackages(scanner: WorkspaceScanner): Promise
         try {
             text = await fs.readFile(file.fsPath, "utf8");
         } catch (error: any) {
-            logger.error(`CPM okunamadı (${file.fsPath}): ${error.message}`);
+            logger.error(`Could not read CPM (${file.fsPath}): ${error.message}`);
             continue;
         }
 

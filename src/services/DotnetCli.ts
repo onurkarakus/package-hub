@@ -37,28 +37,28 @@ export class DotnetCli {
             return "";
         } catch (error: any) {
             if (signal?.aborted || error.name === "AbortError" || error.code === "ABORT_ERR") {
-                const abortError = new Error("Tarama iptal edildi.");
+                const abortError = new Error("Scan cancelled.");
                 abortError.name = "AbortError";
                 throw abortError;
             }
 
             if (error.code === "ENOENT") {
-                throw new Error("`dotnet` komutu bulunamadı. .NET SDK yüklü mü?");
+                throw new Error("`dotnet` was not found. Is the .NET SDK installed?");
             }
 
-            // Exit code != 0 olsa bile JSON gelmişse kullan
+            // Use the JSON even when the exit code is not 0.
             if (!failOnError && error.stdout && String(error.stdout).trim()) {
                 return String(error.stdout).trim();
             }
 
             const detail = error.stderr || error.stdout || error.message || String(error);
-            throw new Error(`Dotnet komutu başarısız : ${detail}`);
+            throw new Error(`dotnet command failed: ${detail}`);
         }
     }
 
     /**
-   * Vulnerable paketleri listeler
-   * Komut: dotnet list package --vulnerable --include-transitive --format json
+   * Lists vulnerable packages.
+   * Command: dotnet list package --vulnerable --include-transitive --format json
    */
     async listVulnerable(
         targetPath: string,
@@ -74,8 +74,8 @@ export class DotnetCli {
     }
 
     /**
-   * Outdated paketleri listeler
-   * Komut: dotnet list package --outdated --include-transitive --format json
+   * Lists outdated packages.
+   * Command: dotnet list package --outdated --include-transitive --format json
    */
     async listOutdated(
         targetPath: string,
@@ -102,7 +102,7 @@ export class DotnetCli {
             return this.parsePackageList(output, "outdated");
         } catch (error: any) {
             const message = error.message || String(error);
-            if (message.includes("`dotnet` komutu bulunamadı") || error.name === "AbortError" || signal?.aborted) {
+            if (message.includes("`dotnet` was not found") || error.name === "AbortError" || signal?.aborted) {
                 throw error;
             }
 
@@ -116,8 +116,8 @@ export class DotnetCli {
     }
 
     /**
-     * Paketin projeye neden girdiğini düz metin olarak döner.
-     * SDK 10 argüman sırası proje, sonra paket. Eski SDK için --project denenir.
+     * Returns plain text for why the package is in the project.
+     * SDK 10 wants the project first, then the package. Older SDKs try --project.
      */
     async why(projectPath: string, packageId: string): Promise<string> {
         const cwd = path.dirname(projectPath);
@@ -129,7 +129,7 @@ export class DotnetCli {
         } catch (error: any) {
             const message = error.message || String(error);
             if (this.whyCommandMissing(message)) {
-                throw new Error("`dotnet nuget why` için .NET SDK 8.0.400 veya daha yenisi gerekir. Ağaç uydurulmadı.");
+                throw new Error("`dotnet nuget why` needs .NET SDK 8.0.400 or newer. No tree was invented.");
             }
 
             try {
@@ -137,10 +137,10 @@ export class DotnetCli {
             } catch (second: any) {
                 const secondMessage = second.message || String(second);
                 if (this.whyCommandMissing(message) || this.whyCommandMissing(secondMessage)) {
-                    throw new Error("`dotnet nuget why` için .NET SDK 8.0.400 veya daha yenisi gerekir. Ağaç uydurulmadı.");
+                    throw new Error("`dotnet nuget why` needs .NET SDK 8.0.400 or newer. No tree was invented.");
                 }
 
-                throw new Error(`${secondMessage}\nAğaç uydurulmadı.`);
+                throw new Error(`${secondMessage}\nNo tree was invented.`);
             }
         }
     }
@@ -148,7 +148,7 @@ export class DotnetCli {
     private async readWhy(command: string, cwd: string): Promise<string> {
         const output = await this.run(command, cwd);
         if (!output.trim()) {
-            throw new Error("dotnet nuget why çıktı vermedi.\nAğaç uydurulmadı.");
+            throw new Error("dotnet nuget why returned no output.\nNo tree was invented.");
         }
 
         return output;
@@ -159,7 +159,7 @@ export class DotnetCli {
     }
 
     /**
-     * Deprecated paketleri listeler
+     * Lists deprecated packages.
      */
     async listDeprecated(targetPath: string, signal?: AbortSignal): Promise<PackageInfo[]> {
         const cwd = require("path").dirname(targetPath);
@@ -170,7 +170,7 @@ export class DotnetCli {
     }
 
     /**
-   * Restore çalıştırır
+   * Runs restore.
    */
     async restore(targetPath: string): Promise<void> {
         const fs = require("fs");
@@ -188,7 +188,7 @@ export class DotnetCli {
     }
 
     /**
-   * Belirli bir paketi günceller
+   * Updates one package.
    */
     async updatePackage(
         projectPath: string,
@@ -213,9 +213,9 @@ export class DotnetCli {
     }
 
     /**
-   * dotnet list package --format json çıktısını PackageInfo[] dizisine çevirir
-   * Not: Microsoft zaman zaman JSON formatını değiştirebiliyor.
-   * Bu parser şu anki (2025-2026) formata göre yazıldı.
+   * Turns dotnet list package --format json into PackageInfo[].
+   * Microsoft sometimes changes the JSON shape.
+   * This parser matches the 2025-2026 format.
    */
     parsePackageList(
         jsonOutput: string,
@@ -230,7 +230,7 @@ export class DotnetCli {
 
         try {
             const data = JSON.parse(jsonOutput);
-            const packageMap = new Map<string, PackageInfo>(); // duplicate engellemek için
+            const packageMap = new Map<string, PackageInfo>();
 
             const projects = data.projects || [];
 
@@ -243,7 +243,7 @@ export class DotnetCli {
 
                 for (const framework of frameworks) {
                     const topLevel = framework.topLevelPackages || [];
-                    const transitive = framework.transitivePackages || []; // ← düzeltildi
+                    const transitive = framework.transitivePackages || [];
 
                     const all = [
                         ...topLevel.map((p: any) => ({ ...p, isTransitive: false })),
@@ -259,7 +259,7 @@ export class DotnetCli {
                             continue;
                         }
 
-                        // Vulnerability bilgisini çıkar
+                        // Read the vulnerability details.
                         let severity: "Critical" | "High" | "Moderate" | "Low" | undefined;
                         let advisoryUrl: string | undefined;
 
@@ -334,7 +334,7 @@ export class DotnetCli {
 
             return Array.from(packageMap.values());
         } catch (error: any) {
-            logger.error(`JSON parse hatası: ${error?.message || error}`);
+            logger.error(`JSON parse error: ${error?.message || error}`);
             return [];
         }
     }

@@ -111,7 +111,7 @@ async function suppressTarget(packageId: string): Promise<vscode.Uri | undefined
 			label: workspaceScanner.getProjectName(project),
 			uri: project,
 		})),
-		{ placeHolder: "Suppress hangi projeye yazılsın" }
+		{ placeHolder: "Which project should the suppress entry be written to?" }
 	);
 	return picked?.uri;
 }
@@ -119,20 +119,20 @@ async function suppressTarget(packageId: string): Promise<vscode.Uri | undefined
 async function openSuppressDiff(packageId: string, url: string): Promise<void> {
 	const uri = await suppressTarget(packageId);
 	if (!uri) {
-		vscode.window.showWarningMessage("Bu paketin csproj dosyası bulunamadı. Suppress yazılmadı.");
+		vscode.window.showWarningMessage("No csproj was found for this package. The suppress entry was not written.");
 		return;
 	}
 
 	const document = await vscode.workspace.openTextDocument(uri);
 	const text = document.getText();
 	if (alreadySuppressed(text, url)) {
-		vscode.window.showInformationMessage("Bu advisory zaten NuGetAuditSuppress içinde.");
+		vscode.window.showInformationMessage("This advisory is already in NuGetAuditSuppress.");
 		return;
 	}
 
 	const closing = text.lastIndexOf("</Project>");
 	if (closing < 0) {
-		vscode.window.showErrorMessage("csproj kapanışı yok. Suppress yazılmadı.");
+		vscode.window.showErrorMessage("The csproj has no closing tag. The suppress entry was not written.");
 		return;
 	}
 
@@ -148,7 +148,7 @@ async function openSuppressDiff(packageId: string, url: string): Promise<void> {
 	edit.insert(uri, document.positionAt(closing), snippet);
 	const applied = await vscode.workspace.applyEdit(edit);
 	if (!applied) {
-		vscode.window.showErrorMessage("Suppress taslağı açılamadı. Dosya değişmedi.");
+		vscode.window.showErrorMessage("The suppress draft could not be opened. The file was not changed.");
 		return;
 	}
 
@@ -160,10 +160,10 @@ async function openSuppressDiff(packageId: string, url: string): Promise<void> {
 	try {
 		await vscode.commands.executeCommand("workbench.files.action.compareWithSaved");
 	} catch (error: any) {
-		logger.info(`Diff komutu açılmadı: ${error?.message || error}`);
+		logger.info(`The diff command did not open: ${error?.message || error}`);
 	}
 	vscode.window.showInformationMessage(
-		"Suppress taslağı diff’te açıldı. Kaydet, sonra Restore All çalıştır. Kaydetmezsen dosya değişmez."
+		"The suppress draft opened in a diff. Save it, then run Restore All. If you do not save, the file stays unchanged."
 	);
 }
 
@@ -180,9 +180,9 @@ async function scanOneTarget(
 	label: string,
 	signal: AbortSignal
 ): Promise<TargetScan> {
-	logger.info(`[${label}] vulnerable başladı`);
-	logger.info(`[${label}] outdated başladı`);
-	logger.info(`[${label}] deprecated başladı`);
+	logger.info(`[${label}] vulnerable started`);
+	logger.info(`[${label}] outdated started`);
+	logger.info(`[${label}] deprecated started`);
 
 	const track = (name: string, work: Promise<any[]>) =>
 		work.then((value) => {
@@ -199,9 +199,9 @@ async function scanOneTarget(
 
 	if (settled.some((result) =>
 		result.status === "rejected"
-		&& String(result.reason?.message || result.reason).includes("`dotnet` komutu bulunamadı")
+		&& String(result.reason?.message || result.reason).includes("`dotnet` was not found")
 	)) {
-		throw new Error("`dotnet` komutu bulunamadı. .NET SDK yüklü mü?");
+		throw new Error("`dotnet` was not found. Is the .NET SDK installed?");
 	}
 
 	const names = ["vulnerable", "outdated", "deprecated", "patch"] as const;
@@ -212,7 +212,7 @@ async function scanOneTarget(
 		}
 
 		if (!signal.aborted) {
-			logger.error(`[${label}] ${name} alınamadı: ${result.reason?.message || result.reason}`);
+			logger.error(`[${label}] could not read ${name}: ${result.reason?.message || result.reason}`);
 		}
 		return [];
 	});
@@ -244,7 +244,7 @@ function attachHighestPatch(groups: any[][], patch: any[]): void {
 async function restoreForProjects(projectPaths: string[]): Promise<void> {
 	const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
 	for (const skipped of slnxPaths(found)) {
-		logger.info(`.slnx atlandı: ${skipped}`);
+		logger.info(`.slnx skipped: ${skipped}`);
 	}
 
 	const solutions = classicSolutionPaths(found);
@@ -259,7 +259,7 @@ async function restoreForProjects(projectPaths: string[]): Promise<void> {
 	const membership = await readSolutionProjects(solutions);
 	for (const solution of membership) {
 		if (solution.error) {
-			logger.error(`Solution okunamadı (${solution.solutionPath}): ${solution.error}`);
+			logger.error(`Could not read the solution (${solution.solutionPath}): ${solution.error}`);
 		}
 	}
 
@@ -293,7 +293,7 @@ async function runPool(
 async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	const projects = await workspaceScanner.findProjects();
 	if (projects.length === 0) {
-		vscode.window.showErrorMessage("Workspace içinde hiç .csproj dosyası bulunamadı.");
+		vscode.window.showErrorMessage("No .csproj file was found in the workspace.");
 		return;
 	}
 
@@ -346,8 +346,8 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 				} catch (error: any) {
 					const message = error.message || String(error);
 					logger.show(true);
-					logger.error(`${label} listesi alınamadı (${project.fsPath}): ${message}`);
-					if (message.includes("`dotnet` komutu bulunamadı")) {
+					logger.error(`Could not read the ${label} list (${project.fsPath}): ${message}`);
+					if (message.includes("`dotnet` was not found")) {
 						blocked = true;
 						vscode.window.showErrorMessage(message);
 					}
@@ -361,22 +361,22 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	}
 
 	if (targets.length === 0) {
-		vscode.window.showInformationMessage(`${label} için güncellenecek paket yok. Major sürüm yazılmaz.`);
+		vscode.window.showInformationMessage(`No packages to update for ${label}. Major versions are not written.`);
 		return;
 	}
 
 	const preview = targets
 		.slice(0, 15)
 		.map((target) => `${target.packageId} ${target.from} → ${target.to} (${target.projectName})`);
-	const extra = targets.length > 15 ? `\n… ve ${targets.length - 15} hedef daha` : "";
+	const extra = targets.length > 15 ? `\n… and ${targets.length - 15} more` : "";
 	const confirm = await vscode.window.showWarningMessage(
-		`${label}\n\n${preview.join("\n")}${extra}\n\nMajor sürüm yazılmaz.`,
+		`${label}\n\n${preview.join("\n")}${extra}\n\nMajor versions are not written.`,
 		{ modal: true },
-		"Evet, Güncelle"
+		"Yes, Update"
 	);
 
-	if (confirm !== "Evet, Güncelle") {
-		logger.info(`${label} iptal edildi.`);
+	if (confirm !== "Yes, Update") {
+		logger.info(`${label} was cancelled.`);
 		return;
 	}
 
@@ -393,20 +393,20 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 						message: `${target.packageId} → ${target.to} (${target.projectName})`,
 					});
 					await dotnetCli.updatePackage(target.projectPath, target.packageId, target.to);
-					logger.info(`Güncellendi: ${target.packageId} → ${target.to} (${target.projectPath})`);
+					logger.info(`Updated: ${target.packageId} → ${target.to} (${target.projectPath})`);
 				}
 
-				progress.report({ message: "Restore çalışıyor..." });
+				progress.report({ message: "Restore is running..." });
 				const updatedProjects = [...new Set(targets.map((target) => target.projectPath))];
 				await restoreForProjects(updatedProjects);
 
-				vscode.window.showInformationMessage(`${label}: ${targets.length} hedef güncellendi.`);
+				vscode.window.showInformationMessage(`${label}: updated ${targets.length} targets.`);
 				await vscode.commands.executeCommand("packageHub.scanWorkspace");
 			} catch (error: any) {
 				const message = error.message || String(error);
 				logger.show(true);
-				logger.error(`${label} hatası: ${message}`);
-				vscode.window.showErrorMessage(`Güncelleme başarısız: ${message}`);
+				logger.error(`${label} failed: ${message}`);
+				vscode.window.showErrorMessage(`Update failed: ${message}`);
 			}
 		}
 	);
@@ -433,7 +433,7 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.StatusBarAlignment.Left,
 		100
 	);
-	statusBarItem.tooltip = "PackageHub – Tıklayarak Health Dashboard’u aç";
+	statusBarItem.tooltip = "PackageHub – Click to open the Health Dashboard";
 	statusBarItem.show();
 	statusBarItem.command = "packageHub.showHealthDashboard";
 	context.subscriptions.push(statusBarItem);
@@ -474,7 +474,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
 		if (event.affectsConfiguration("packageHub.minimumSeverity")) {
 			const minimum = vscode.workspace.getConfiguration("packageHub").get<string>("minimumSeverity") || "low";
-			logger.info(`Severity eşiği: ${minimum}`);
+			logger.info(`Severity threshold: ${minimum}`);
 			paintScanStatus(statusBarItem);
 			treeProvider.refresh();
 			HealthDashboardPanel.refreshIfOpen();
@@ -485,14 +485,14 @@ export function activate(context: vscode.ExtensionContext) {
 		if (event.affectsConfiguration("packageHub.minimumReleaseAge")) {
 			const days = vscode.workspace.getConfiguration("packageHub").get<number>("minimumReleaseAge");
 			logger.info(typeof days === "number" && days > 0
-				? `Yaş kapısı: ${days} gün`
-				: "Yaş kapısı kapalı.");
+				? `Age gate: ${days} days`
+				: "Age gate is off.");
 		}
 
 		if (event.affectsConfiguration("packageHub.includePrerelease")) {
 			logger.info(ScanState.includePrerelease()
-				? "Ön sürüm açık. Sonraki taramada uygulanır."
-				: "Ön sürüm kapalı. Sonraki taramada uygulanır.");
+				? "Prerelease is on. It applies on the next scan."
+				: "Prerelease is off. It applies on the next scan.");
 			codeActionProvider.clearCache();
 		}
 	}));
@@ -503,7 +503,7 @@ export function activate(context: vscode.ExtensionContext) {
 			HealthDashboardPanel.refreshIfOpen();
 		})
 		.catch((error: any) => {
-			logger.error(`CPM okunamadı: ${error.message}`);
+			logger.error(`Could not read CPM: ${error.message}`);
 		});
 
 	void refreshNuGetSources(workspaceScanner)
@@ -511,7 +511,7 @@ export function activate(context: vscode.ExtensionContext) {
 			HealthDashboardPanel.refreshIfOpen();
 		})
 		.catch((error: any) => {
-			logger.error(`NuGet.config okunamadı: ${error.message}`);
+			logger.error(`Could not read NuGet.config: ${error.message}`);
 		});
 
 	void workspaceScanner.findProjects()
@@ -522,10 +522,10 @@ export function activate(context: vscode.ExtensionContext) {
 			HealthDashboardPanel.refreshIfOpen();
 		})
 		.catch((error: any) => {
-			logger.error(`Audit kaynağı uyarısı okunamadı: ${error.message}`);
+			logger.error(`Could not read the audit source warning: ${error.message}`);
 		});
 
-	// Hover açıklamasıdır. Güncelleme linkleri ampulün önbelleğini okur, yeni dotnet çağrısı başlatmaz.
+	// Hover is the explanation. Update links read the lightbulb cache and do not start a new dotnet call.
 	const hoverProvider = vscode.languages.registerHoverProvider(
 		[
 			{ language: "xml", scheme: "file", pattern: "**/*.{csproj,props}" }
@@ -650,7 +650,7 @@ export function activate(context: vscode.ExtensionContext) {
 	async function updateActiveLine(channel: "patch" | "latest"): Promise<void> {
 		const ref = packageOnActiveLine();
 		if (!ref) {
-			vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+			vscode.window.showWarningMessage("No package was found on this line.");
 			return;
 		}
 
@@ -661,7 +661,7 @@ export function activate(context: vscode.ExtensionContext) {
 		);
 		if (!peek.ready) {
 			vscode.window.showInformationMessage(
-				"Patch listesi henüz hazır değil. Güncelleme başlatılmadı."
+				"The patch list is not ready yet. The update was not started."
 			);
 			return;
 		}
@@ -669,7 +669,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const version = channel === "patch" ? peek.patch : peek.latest;
 		if (!version) {
 			vscode.window.showWarningMessage(
-				`${ref.id} için ${channel} sürümü yok. Güncelleme başlatılmadı.`
+				`No ${channel} version for ${ref.id}. The update was not started.`
 			);
 			return;
 		}
@@ -696,7 +696,7 @@ export function activate(context: vscode.ExtensionContext) {
 				if (fromLine) {
 					packageId = fromLine;
 				} else if (inProjectFile) {
-					vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+					vscode.window.showWarningMessage("No package was found on this line.");
 					return;
 				}
 			}
@@ -711,13 +711,13 @@ export function activate(context: vscode.ExtensionContext) {
 				const uniqueIds = [...new Set(all.map((p) => p.id))];
 				if (uniqueIds.length === 0) {
 					vscode.window.showWarningMessage(
-						"Ignore için paket yok. Önce Scan Workspace çalıştır."
+						"No package to ignore. Run Scan Workspace first."
 					);
 					return;
 				}
 
 				const picked = await vscode.window.showQuickPick(uniqueIds, {
-					placeHolder: "Ignore edilecek paketi seç",
+					placeHolder: "Select the package to ignore",
 				});
 
 				if (!picked) {
@@ -732,23 +732,23 @@ export function activate(context: vscode.ExtensionContext) {
 				[
 					{
 						label: "Hide in PackageHub",
-						description: "Liste",
-						detail: "Build uyarısı durur",
+						description: "List",
+						detail: "The build warning stays",
 					},
 					{
 						label: "Suppress this advisory",
-						description: url ? "NuGetAuditSuppress" : "Kapalı",
-						detail: url || "Advisory URL yok",
+						description: url ? "NuGetAuditSuppress" : "Off",
+						detail: url || "No advisory URL",
 					},
 				],
-				{ placeHolder: `${packageId} için ignore` }
+				{ placeHolder: `Ignore for ${packageId}` }
 			);
 			if (!choice) {
 				return;
 			}
 			if (choice.label === "Suppress this advisory") {
 				if (!url) {
-					vscode.window.showWarningMessage("Advisory URL yok. Suppress kapalı.");
+					vscode.window.showWarningMessage("No advisory URL. Suppress is unavailable.");
 					return;
 				}
 				await openSuppressDiff(packageId, url);
@@ -766,7 +766,7 @@ export function activate(context: vscode.ExtensionContext) {
 			await config.update("ignoredPackages", [...current, packageId], vscode.ConfigurationTarget.Workspace);
 
 			vscode.window.showInformationMessage(
-				`${packageId} PackageHub listesinden gizlendi. Build uyarısı durur.`
+				`${packageId} is hidden from PackageHub lists. The build warning stays.`
 			);
 			await vscode.commands.executeCommand("packageHub.scanWorkspace");
 		}
@@ -779,12 +779,12 @@ export function activate(context: vscode.ExtensionContext) {
 			const current = config.get<string[]>("ignoredPackages") || [];
 
 			if (current.length === 0) {
-				vscode.window.showInformationMessage("Ignore listesi boş.");
+				vscode.window.showInformationMessage("The ignore list is empty.");
 				return;
 			}
 
 			const picked = await vscode.window.showQuickPick(current, {
-				placeHolder: "Ignore listesinden çıkarılacak paket",
+				placeHolder: "Select the package to unignore",
 			});
 
 			if (!picked) {
@@ -797,7 +797,7 @@ export function activate(context: vscode.ExtensionContext) {
 				vscode.ConfigurationTarget.Workspace
 			);
 
-			vscode.window.showInformationMessage(`${picked} ignore listesinden çıktı.`);
+			vscode.window.showInformationMessage(`${picked} was removed from the ignore list.`);
 			await vscode.commands.executeCommand("packageHub.scanWorkspace");
 		}
 	);
@@ -808,7 +808,7 @@ export function activate(context: vscode.ExtensionContext) {
 			try {
 			const editor = vscode.window.activeTextEditor;
 			if (!editor) {
-				vscode.window.showWarningMessage("Açık bir editör yok.");
+				vscode.window.showWarningMessage("No editor is open.");
 				return;
 			}
 
@@ -817,7 +817,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (!match) {
 				vscode.window.showWarningMessage(
-					"Bu satırda PackageReference bulunamadı."
+					"No PackageReference was found on this line."
 				);
 				return;
 			}
@@ -828,7 +828,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (!info) {
 				vscode.window.showInformationMessage(
-					`${packageId} sağlıklı görünüyor (veya henüz scan yapılmadı).`
+					`${packageId} looks healthy (or no scan has run yet).`
 				);
 				return;
 			}
@@ -836,12 +836,12 @@ export function activate(context: vscode.ExtensionContext) {
 			const lines = [
 				`${packageId}`,
 				info.version ? `Mevcut: ${info.version}` : undefined,
-				info.latestVersion ? `Önerilen: ${info.latestVersion}` : undefined,
+				info.latestVersion ? `Suggested: ${info.latestVersion}` : undefined,
 				info.severity ? `Severity: ${info.severity}` : undefined,
 				vulnerable ? "Durum: Vulnerable" : undefined,
 				!vulnerable && deprecated ? "Durum: Deprecated" : undefined,
 				!vulnerable && !deprecated && outdated ? "Durum: Outdated" : undefined,
-				info.projects?.length ? `Projeler: ${info.projects.join(", ")}` : undefined,
+				info.projects?.length ? `Projects: ${info.projects.join(", ")}` : undefined,
 			].filter(Boolean);
 
 			const buttons: string[] = [];
@@ -868,8 +868,8 @@ export function activate(context: vscode.ExtensionContext) {
 				});
 			}
 			} catch (error: any) {
-				logger.error(`Paket açıklanamadı: ${error?.message || error}`);
-				vscode.window.showErrorMessage("Paket açıklanamadı.");
+				logger.error(`Could not explain the package: ${error?.message || error}`);
+				vscode.window.showErrorMessage("Could not explain the package.");
 			}
 		}
 	);
@@ -879,7 +879,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (!workspaceRoot) {
 				vscode.window.showErrorMessage(
-					"Açık bir workspace bulunamadı. Lütfen bir klasör açın."
+					"No workspace is open. Open a folder."
 				);
 				return;
 			}
@@ -891,16 +891,16 @@ export function activate(context: vscode.ExtensionContext) {
 					cancellable: true,
 				},
 				async (progress, token) => {
-					progress.report({ message: "Paketler taranıyor..." });
+					progress.report({ message: "Scanning packages..." });
 
 					const abort = new AbortController();
 					const cancelSub = token.onCancellationRequested(() => abort.abort());
 
 					try {
 						logger.show(true);
-						logger.info(`Tarama başlatıldı: ${workspaceRoot}`);
+						logger.info(`Scan started: ${workspaceRoot}`);
 
-						// Her taramada cache’i temizle (şimdilik stabilite için)
+						// Clear the cache on every scan.
 						cacheService.invalidateAll();
 
 						let vulnerable: any[] = [];
@@ -910,12 +910,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 						const foundSolutions = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
 						for (const skipped of slnxPaths(foundSolutions)) {
-							logger.info(`.slnx atlandı: ${skipped}`);
+							logger.info(`.slnx skipped: ${skipped}`);
 						}
 						const solutions = classicSolutionPaths(foundSolutions);
 
 						if (token.isCancellationRequested) {
-							logger.info("Tarama iptal edildi. Sonuç çizilmedi.");
+							logger.info("Scan cancelled. Results were not drawn.");
 							return;
 						}
 
@@ -930,7 +930,7 @@ export function activate(context: vscode.ExtensionContext) {
 								const targetPath = solutions[index];
 								const label = path.basename(targetPath);
 								progress.report({ message: `${index + 1}/${solutions.length} ${label}` });
-								logger.info(`Solution taranıyor: ${targetPath}`);
+								logger.info(`Scanning solution: ${targetPath}`);
 
 								try {
 									const lists = await scanOneTarget(
@@ -944,8 +944,8 @@ export function activate(context: vscode.ExtensionContext) {
 									allDeprecated.push(...lists.deprecated);
 									allPatch.push(...lists.patch);
 								} catch (solutionError: any) {
-									logger.error(`Solution taranamadı (${targetPath}): ${solutionError.message}`);
-									if (String(solutionError.message).includes("`dotnet` komutu bulunamadı")) {
+									logger.error(`Could not scan the solution (${targetPath}): ${solutionError.message}`);
+									if (String(solutionError.message).includes("`dotnet` was not found")) {
 										abort.abort();
 										throw solutionError;
 									}
@@ -957,12 +957,12 @@ export function activate(context: vscode.ExtensionContext) {
 							deprecated = mergeById(allDeprecated);
 							patch = mergeById(allPatch);
 						} else {
-							// 2. Solution yoksa TÜM projeleri tara
+							// 2. When there is no solution, scan every project.
 							const projects = await workspaceScanner.findProjects();
 
 							if (projects.length === 0) {
 								vscode.window.showErrorMessage(
-									"Workspace içinde hiç .sln veya .csproj dosyası bulunamadı."
+									"No .sln or .csproj file was found in the workspace."
 								);
 								return;
 							}
@@ -978,7 +978,7 @@ export function activate(context: vscode.ExtensionContext) {
 								const project = projects[index];
 								const label = workspaceScanner.getProjectName(project);
 								progress.report({ message: `${index + 1}/${projects.length} ${label}` });
-								logger.info(`Taranıyor: ${project.fsPath}`);
+								logger.info(`Scanning: ${project.fsPath}`);
 
 								try {
 									const lists = await scanOneTarget(
@@ -992,8 +992,8 @@ export function activate(context: vscode.ExtensionContext) {
 									allDeprecated.push(...lists.deprecated);
 									allPatch.push(...lists.patch);
 								} catch (projectError: any) {
-									logger.error(`Proje taranamadı (${project.fsPath}): ${projectError.message}`);
-									if (String(projectError.message).includes("`dotnet` komutu bulunamadı")) {
+									logger.error(`Could not scan the project (${project.fsPath}): ${projectError.message}`);
+									if (String(projectError.message).includes("`dotnet` was not found")) {
 										abort.abort();
 										throw projectError;
 									}
@@ -1007,7 +1007,7 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						if (token.isCancellationRequested) {
-							logger.info("Tarama iptal edildi. Sonuç çizilmedi.");
+							logger.info("Scan cancelled. Results were not drawn.");
 							return;
 						}
 
@@ -1032,7 +1032,7 @@ export function activate(context: vscode.ExtensionContext) {
 								}))
 							);
 						} catch (originError: any) {
-							logger.error(`Transitive üst paket okunamadı: ${originError.message}`);
+							logger.error(`Could not read the transitive parent: ${originError.message}`);
 						}
 
 						ScanState.setResults(vulnerable, outdated, deprecated);
@@ -1040,13 +1040,13 @@ export function activate(context: vscode.ExtensionContext) {
 						try {
 							await loadAdvisoryCatalog();
 						} catch (advisoryError: any) {
-							logger.error(`Advisory kaydı okunamadı: ${advisoryError.message}`);
+							logger.error(`Could not read the advisory record: ${advisoryError.message}`);
 						}
 
 						try {
 							await loadReleaseAges();
 						} catch (ageError: any) {
-							logger.error(`Yaş kaydı okunamadı: ${ageError.message}`);
+							logger.error(`Could not read the release-age record: ${ageError.message}`);
 						}
 
 						treeProvider.refresh();
@@ -1055,17 +1055,17 @@ export function activate(context: vscode.ExtensionContext) {
 							await refreshCentralPackages(workspaceScanner);
 							logger.info(
 								ScanState.getCpm()
-									? `CPM: ${ScanState.getCentralVersionCount()} sürüm`
-									: "CPM: yok"
+									? `CPM: ${ScanState.getCentralVersionCount()} versions`
+									: "CPM: none"
 							);
 						} catch (cpmError: any) {
-							logger.error(`CPM okunamadı: ${cpmError.message}`);
+							logger.error(`Could not read CPM: ${cpmError.message}`);
 						}
 
 						try {
 							await refreshNuGetSources(workspaceScanner);
 						} catch (sourceError: any) {
-							logger.error(`NuGet.config okunamadı: ${sourceError.message}`);
+							logger.error(`Could not read NuGet.config: ${sourceError.message}`);
 						}
 
 						try {
@@ -1073,7 +1073,7 @@ export function activate(context: vscode.ExtensionContext) {
 							const gap = await workspaceHasAuditDataGap(noticed.map((project) => project.fsPath));
 							ScanState.setAuditDataGap(gap);
 						} catch (auditNoticeError: any) {
-							logger.error(`Audit kaynağı uyarısı okunamadı: ${auditNoticeError.message}`);
+							logger.error(`Could not read the audit source warning: ${auditNoticeError.message}`);
 						}
 
 						paintScanStatus(statusBarItem);
@@ -1081,10 +1081,10 @@ export function activate(context: vscode.ExtensionContext) {
 						try {
 							await saveLastScan(context.workspaceState);
 						} catch (saveError: any) {
-							logger.error(`Son tarama kaydedilemedi: ${saveError.message}`);
+							logger.error(`Could not save the last scan: ${saveError.message}`);
 						}
 
-						const message = `Tarama tamamlandı → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}, Deprecated: ${deprecated.length}`;
+						const message = `Scan finished → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}, Deprecated: ${deprecated.length}`;
 						vscode.window.showInformationMessage(message);
 						logger.info(message);
 
@@ -1097,11 +1097,11 @@ export function activate(context: vscode.ExtensionContext) {
 							await auditDiagnostics.refresh();
 							void codeActionProvider.prefetch(auditDiagnostics.affectedProjects())
 								.finally(() => {
-									logger.info("CodeLens patch listesi hazır.");
+									logger.info("CodeLens patch list is ready.");
 									codeLensProvider.refresh();
 								});
 						} catch (diagError: any) {
-							logger.error(`Quick Fix tanı hatası: ${diagError.message}`);
+							logger.error(`Quick Fix diagnostic error: ${diagError.message}`);
 						}
 
 						//Graph
@@ -1109,7 +1109,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 						// Detay log
 						if (vulnerable.length > 0) {
-							logger.info("--- Vulnerable Paketler ---");
+							logger.info("--- Vulnerable packages ---");
 							vulnerable.forEach((p: any) => {
 								logger.info(
 									`${p.id} ${p.version} [${p.severity || "unknown"}] (${p.projects.join(", ")})`
@@ -1118,7 +1118,7 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						if (outdated.length > 0) {
-							logger.info("--- Outdated Paketler ---");
+							logger.info("--- Outdated packages ---");
 							outdated.forEach((p: any) => {
 								logger.info(
 									`${p.id} ${p.version} → ${p.latestVersion || "?"} (${p.projects.join(", ")})`
@@ -1127,21 +1127,21 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						if (deprecated.length > 0) {
-							logger.info("--- Deprecated Paketler ---");
+							logger.info("--- Deprecated packages ---");
 							deprecated.forEach((p: any) => {
 								logger.info(`${p.id} ${p.version} (${p.projects.join(", ")})`);
 							});
 						}
 					} catch (error: any) {
 						if (token.isCancellationRequested) {
-							logger.info("Tarama iptal edildi. Sonuç çizilmedi.");
+							logger.info("Scan cancelled. Results were not drawn.");
 							return;
 						}
 
 						const errorMessage = error.message || String(error);
-						logger.error(`Tarama hatası: ${errorMessage}`);
+						logger.error(`Scan error: ${errorMessage}`);
 						vscode.window.showErrorMessage(
-							`PackageHub tarama hatası: ${errorMessage}`
+							`PackageHub scan error: ${errorMessage}`
 						);
 					} finally {
 						cancelSub.dispose();
@@ -1154,7 +1154,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.scanWorkspace",
 		async () => {
 			if (!scanGate.begin()) {
-				logger.info("Tarama zaten sürüyor. Bittiğinde bir kez daha çalışacak.");
+				logger.info("A scan is already running. It will run once more when it finishes.");
 				return;
 			}
 			try {
@@ -1172,7 +1172,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.updateVulnerable",
 		async (args?: { packageId: string; version: string; projectName?: string }) => {
 			if (!args || !args.packageId) {
-				vscode.window.showWarningMessage("Güncellenecek paket bilgisi eksik.");
+				vscode.window.showWarningMessage("The package update details are missing.");
 				return;
 			}
 
@@ -1195,9 +1195,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (targetProjects.length === 0) {
 				vscode.window.showErrorMessage(
-					`${packageId} paketinin bulunduğu proje eşleştirilemedi. Tüm projelere eklenmedi.`
+					`Could not match a project for ${packageId}. It was not added to every project.`
 				);
-				logger.error(`Update iptal: proje eşleşmedi → ${packageId}`);
+				logger.error(`Update cancelled: no matching project → ${packageId}`);
 				return;
 			}
 
@@ -1215,13 +1215,13 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (!version) {
 				const cont = await vscode.window.showWarningMessage(
-					`${packageId} için önerilen yeni sürüm yok.\n\nAynı paket adı ile NuGet'te daha yeni versiyon olmayabilir (ör. xunit → xunit.v3).\nYine de "dotnet add package ${packageId}" çalıştırılsın mı?`,
+					`No newer version was suggested for ${packageId}.\n\nA newer version may not exist under the same package id (for example xunit → xunit.v3).\nRun "dotnet add package ${packageId}" anyway?`,
 					{ modal: true },
-					"Yine de Dene",
-					"İptal"
+					"Try anyway",
+					"Cancel"
 				);
 
-				if (cont !== "Yine de Dene") {
+				if (cont !== "Try anyway") {
 					return;
 				}
 			}
@@ -1231,12 +1231,12 @@ export function activate(context: vscode.ExtensionContext) {
 				? `${packageId} ${currentVersion} → ${version}`
 				: `${packageId} → ${version}`;
 			const confirm = await vscode.window.showWarningMessage(
-				`${heading}\n\nGüncellenecek projeler:\n${projectNames}`,
+				`${heading}\n\nProjects to update:\n${projectNames}`,
 				{ modal: true },
-				"Evet, Güncelle"
+				"Yes, Update"
 			);
 
-			if (confirm !== "Evet, Güncelle") {
+			if (confirm !== "Yes, Update") {
 				return;
 			}
 
@@ -1250,37 +1250,37 @@ export function activate(context: vscode.ExtensionContext) {
 					try {
 						for (const project of projectsToUpdate) {
 							progress.report({
-								message: `${packageId} güncelleniyor → ${workspaceScanner.getProjectName(project)}`,
+								message: `${packageId} updating → ${workspaceScanner.getProjectName(project)}`,
 							});
 
 							await dotnetCli.updatePackage(project.fsPath, packageId, version);
 							logger.info(
-								`Güncellendi: ${packageId} → ${version} (${project.fsPath})`
+								`Updated: ${packageId} → ${version} (${project.fsPath})`
 							);
 						}
 
 						// Restore
-						progress.report({ message: "Restore çalışıyor..." });
+						progress.report({ message: "Restore is running..." });
 
 						try {
 							await restoreForProjects(projectsToUpdate.map((project) => project.fsPath));
-							logger.info("Restore tamamlandı.");
+							logger.info("Restore finished.");
 						} catch (restoreError: any) {
-							logger.error(`Restore hatası: ${restoreError.message}`);
+							logger.error(`Restore error: ${restoreError.message}`);
 							vscode.window.showWarningMessage(
-								`Paket güncellendi ama restore başarısız: ${restoreError.message}`
+								`The package was updated, but restore failed: ${restoreError.message}`
 							);
 						}
 
 						vscode.window.showInformationMessage(
-							`${packageId} → ${version} (${projectsToUpdate.length} proje) güncellendi.`
+							`${packageId} → ${version} updated in ${projectsToUpdate.length} projects.`
 						);
 
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
 					} catch (error: any) {
 						const msg = error.message || String(error);
-						logger.error(`Update hatası: ${msg}`);
-						vscode.window.showErrorMessage(`Güncelleme başarısız: ${msg}`);
+						logger.error(`Update error: ${msg}`);
+						vscode.window.showErrorMessage(`Update failed: ${msg}`);
 					}
 				}
 			);
@@ -1313,7 +1313,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!packageId) {
-				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				vscode.window.showWarningMessage("No package was found on this line.");
 				return;
 			}
 
@@ -1344,7 +1344,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (targets.length === 0) {
 				vscode.window.showErrorMessage(
-					`${packageId} paketinin bulunduğu proje eşleştirilemedi. Kaldırma başlatılmadı.`
+					`Could not match a project for ${packageId}. Removal was not started.`
 				);
 				return;
 			}
@@ -1353,11 +1353,11 @@ export function activate(context: vscode.ExtensionContext) {
 				.map((project) => workspaceScanner.getProjectName(project))
 				.join("\n");
 			const confirm = await vscode.window.showWarningMessage(
-				`${packageId} kaldırılsın mı?\n\n${projectNames}`,
+				`Remove ${packageId}?\n\n${projectNames}`,
 				{ modal: true },
-				"Evet, Kaldır"
+				"Yes, Remove"
 			);
-			if (confirm !== "Evet, Kaldır") {
+			if (confirm !== "Yes, Remove") {
 				return;
 			}
 
@@ -1372,20 +1372,20 @@ export function activate(context: vscode.ExtensionContext) {
 					try {
 						for (const project of targets) {
 							progress.report({
-								message: `${packageId} kaldırılıyor → ${workspaceScanner.getProjectName(project)}`,
+								message: `${packageId} removing → ${workspaceScanner.getProjectName(project)}`,
 							});
 							await dotnetCli.removePackage(project.fsPath, packageId);
 							removed += 1;
-							logger.info(`Kaldırıldı: ${packageId} (${project.fsPath})`);
+							logger.info(`Removed: ${packageId} (${project.fsPath})`);
 						}
 
-						vscode.window.showInformationMessage(`${packageId} kaldırıldı.`);
+						vscode.window.showInformationMessage(`${packageId} was removed.`);
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
 					} catch (error: any) {
 						const msg = error.message || String(error);
 						logger.show(true);
-						logger.error(`Kaldırma hatası: ${msg}`);
-						vscode.window.showErrorMessage(`Kaldırma başarısız: ${msg}`);
+						logger.error(`Remove error: ${msg}`);
+						vscode.window.showErrorMessage(`Remove failed: ${msg}`);
 						if (removed > 0) {
 							await vscode.commands.executeCommand("packageHub.scanWorkspace");
 						}
@@ -1410,13 +1410,13 @@ export function activate(context: vscode.ExtensionContext) {
 		async () => {
 			const ref = packageOnActiveLine();
 			if (!ref) {
-				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				vscode.window.showWarningMessage("No package was found on this line.");
 				return;
 			}
 
 			const url = advisorySuppressUrl(ref.id);
 			if (!url) {
-				vscode.window.showWarningMessage("Advisory adresi yok. Güncelleme başlatılmadı.");
+				vscode.window.showWarningMessage("No advisory link. The update was not started.");
 				return;
 			}
 
@@ -1428,7 +1428,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.updateSelectedPackage",
 		async (item?: any) => {
 			if (!item?.packageId) {
-				vscode.window.showWarningMessage("Paket Seçilemedi");
+				vscode.window.showWarningMessage("Could not select a package");
 				return;
 			}
 
@@ -1444,7 +1444,7 @@ export function activate(context: vscode.ExtensionContext) {
 		async (args?: { packageId?: string }) => {
 			const packageId = typeof args?.packageId === "string" ? args.packageId.trim() : "";
 			if (!packageId) {
-				vscode.window.showWarningMessage("Paket seçilemedi.");
+				vscode.window.showWarningMessage("Could not select a package.");
 				return;
 			}
 
@@ -1493,7 +1493,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.showPackageInfo",
 		async (item?: any) => {
 			if (!item?.packageId) {
-				vscode.window.showWarningMessage("Paket seçilemedi.");
+				vscode.window.showWarningMessage("Could not select a package.");
 				return;
 			}
 
@@ -1502,11 +1502,11 @@ export function activate(context: vscode.ExtensionContext) {
 			const version = info?.version || (typeof item.version === "string" ? item.version : undefined);
 
 			const lines = [
-				`Paket: ${item.packageId}`,
+				`Package: ${item.packageId}`,
 				version ? `Mevcut: ${version}` : undefined,
-				info?.latestVersion ? `Son sürüm: ${info.latestVersion}` : undefined,
+				info?.latestVersion ? `Latest version: ${info.latestVersion}` : undefined,
 				info?.severity ? `Severity: ${info.severity}` : undefined,
-				info?.projects?.length ? `Projeler: ${info.projects.join(", ")}` : undefined,
+				info?.projects?.length ? `Projects: ${info.projects.join(", ")}` : undefined,
 			].filter(Boolean);
 
 			vscode.window.showInformationMessage(lines.join(" | "));
@@ -1517,7 +1517,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.openNugetPage",
 		async (item?: any) => {
 			if (!item?.packageId) {
-				vscode.window.showWarningMessage("Paket seçilemedi.");
+				vscode.window.showWarningMessage("Could not select a package.");
 				return;
 			}
 
@@ -1531,7 +1531,7 @@ export function activate(context: vscode.ExtensionContext) {
 		async () => {
 			const workspaceRoot = workspaceScanner.getWorkspaceRoot();
 			if (!workspaceRoot) {
-				vscode.window.showErrorMessage("Açık bir workspace bulunamadı.");
+				vscode.window.showErrorMessage("No workspace is open.");
 				return;
 			}
 
@@ -1542,28 +1542,28 @@ export function activate(context: vscode.ExtensionContext) {
 					cancellable: false,
 				},
 				async (progress) => {
-					progress.report({ message: "Restore çalışıyor..." });
+					progress.report({ message: "Restore is running..." });
 
 					try {
 						const projects = await workspaceScanner.findProjects();
 						const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
 						if (classicSolutionPaths(found).length === 0 && projects.length === 0) {
 							vscode.window.showErrorMessage(
-								"Restore edilecek .sln veya .csproj bulunamadı."
+								"No .sln or .csproj was found to restore."
 							);
 							return;
 						}
 
 						await restoreForProjects(projects.map((project) => project.fsPath));
 
-						vscode.window.showInformationMessage("Restore tamamlandı.");
-						logger.info("Restore tamamlandı.");
+						vscode.window.showInformationMessage("Restore finished.");
+						logger.info("Restore finished.");
 
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
 					} catch (error: any) {
 						const msg = error.message || String(error);
-						logger.error(`Restore hatası: ${msg}`);
-						vscode.window.showErrorMessage(`Restore başarısız: ${msg}`);
+						logger.error(`Restore error: ${msg}`);
+						vscode.window.showErrorMessage(`Restore failed: ${msg}`);
 					}
 				}
 			);
@@ -1584,7 +1584,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!packageId) {
-				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				vscode.window.showWarningMessage("No package was found on this line.");
 				return;
 			}
 
@@ -1607,7 +1607,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!packageId) {
-				vscode.window.showWarningMessage("Bu satırda paket bulunamadı.");
+				vscode.window.showWarningMessage("No package was found on this line.");
 				return;
 			}
 
@@ -1620,7 +1620,7 @@ export function activate(context: vscode.ExtensionContext) {
 				);
 				if (!match) {
 					vscode.window.showWarningMessage(
-						`${packageId} için proje bulunamadı: ${requestedProject}`
+						`No project was found for ${packageId}: ${requestedProject}`
 					);
 					return;
 				}
@@ -1630,7 +1630,7 @@ export function activate(context: vscode.ExtensionContext) {
 			} else if (projects.length === 1) {
 				projectPath = projects[0].fsPath;
 			} else if (projects.length === 0) {
-				vscode.window.showErrorMessage("Workspace içinde hiç .csproj dosyası bulunamadı.");
+				vscode.window.showErrorMessage("No .csproj file was found in the workspace.");
 				return;
 			} else {
 				const picked = await vscode.window.showQuickPick(
@@ -1639,7 +1639,7 @@ export function activate(context: vscode.ExtensionContext) {
 						description: project.fsPath,
 						fsPath: project.fsPath,
 					})),
-					{ placeHolder: "Why için proje seç" }
+					{ placeHolder: "Select a project for Why" }
 				);
 				if (!picked) {
 					return;
@@ -1648,7 +1648,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!projectPath) {
-				vscode.window.showErrorMessage("Workspace içinde hiç .csproj dosyası bulunamadı.");
+				vscode.window.showErrorMessage("No .csproj file was found in the workspace.");
 				return;
 			}
 
@@ -1670,12 +1670,12 @@ export function activate(context: vscode.ExtensionContext) {
 						logger.appendLine(text);
 						await DependencyGraphPanel.show(packageId);
 						vscode.window.showInformationMessage(
-							`${packageId} yolu açıldı. CLI metni Output kanalında.`
+							`Opened the path for ${packageId}. The CLI text is in the Output panel.`
 						);
 					} catch (error: any) {
 						const message = error.message || String(error);
 						logger.show(true);
-						logger.error(`Why başarısız: ${message}`);
+						logger.error(`Why failed: ${message}`);
 						vscode.window.showErrorMessage(message);
 					}
 				}
@@ -1695,11 +1695,11 @@ export function activate(context: vscode.ExtensionContext) {
 			try {
 				await vscode.env.clipboard.writeText(markdown);
 			} catch (error: any) {
-				logger.error(`Sağlık raporu kopyalanamadı: ${error?.message || error}`);
-				vscode.window.showErrorMessage("Sağlık raporu kopyalanamadı.");
+				logger.error(`Could not copy the health report: ${error?.message || error}`);
+				vscode.window.showErrorMessage("Could not copy the health report.");
 				return;
 			}
-			vscode.window.showInformationMessage("Sağlık raporu panoya kopyalandı.");
+			vscode.window.showInformationMessage("Health report copied to the clipboard.");
 		}
 	);
 
@@ -1712,18 +1712,18 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 			if (markdown === "") {
-				vscode.window.showInformationMessage("Açık yok.");
+				vscode.window.showInformationMessage("No vulnerabilities.");
 				return;
 			}
 
 			try {
 				await vscode.env.clipboard.writeText(markdown);
 			} catch (error: any) {
-				logger.error(`Açık raporu kopyalanamadı: ${error?.message || error}`);
-				vscode.window.showErrorMessage("Açık raporu kopyalanamadı.");
+				logger.error(`Could not copy the vulnerability report: ${error?.message || error}`);
+				vscode.window.showErrorMessage("Could not copy the vulnerability report.");
 				return;
 			}
-			vscode.window.showInformationMessage("Açık raporu panoya kopyalandı.");
+			vscode.window.showInformationMessage("Vulnerability report copied to the clipboard.");
 		}
 	);
 
@@ -1731,7 +1731,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.openAdvisory",
 		async (url?: string) => {
 			if (!url) {
-				vscode.window.showWarningMessage("Advisory adresi yok. Güncelleme başlatılmadı.");
+				vscode.window.showWarningMessage("No advisory link. The update was not started.");
 				return;
 			}
 
@@ -1743,7 +1743,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.quickFixBlocked",
 		async (message?: string) => {
 			vscode.window.showWarningMessage(
-				message || "Patch sürümü yok. Güncelleme başlatılmadı."
+				message || "No patch version. The update was not started."
 			);
 		}
 	);
@@ -1752,7 +1752,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.codeLensPending",
 		async () => {
 			vscode.window.showInformationMessage(
-				"Patch listesi hazır olunca satırın üstündeki lens sürümü yazar. Latest bu satırda yok."
+				"The lens above the line shows the version once the patch list is ready. Latest is not on this line."
 			);
 		}
 	);
@@ -1795,7 +1795,7 @@ export function activate(context: vscode.ExtensionContext) {
 		if (!isPackageProjectFile(document.uri.fsPath)) {
 			return;
 		}
-		logger.info(`Kayıt sonrası tarama: ${document.uri.fsPath}`);
+		logger.info(`Scan after save: ${document.uri.fsPath}`);
 		void vscode.commands.executeCommand("packageHub.scanWorkspace");
 	}));
 
@@ -1828,5 +1828,5 @@ function packageReferenceLine(text: string, packageId: string): number {
 }
 
 export function deactivate() {
-	logger.info("PackageHub kapatıldı.");
+	logger.info("PackageHub closed.");
 }

@@ -4,8 +4,8 @@ import { logger } from "../utils/logger";
 
 export class WorkspaceScanner {
     /**
-   * Workspace kök klasörünü döner.
-   * Multi-root workspace'te ilk klasörü alır (şimdilik yeterli).
+   * Returns the workspace root folder.
+   * In a multi-root workspace, uses the first folder.
    */
     getWorkspaceRoot(): string | undefined {
         const folders = vscode.workspace.workspaceFolders;
@@ -18,32 +18,32 @@ export class WorkspaceScanner {
     }
 
     /**
-   * Tüm .csproj dosyalarını bulur
+   * Finds every .csproj file.
    */
     async findProjects(): Promise<vscode.Uri[]> {
-        return this.find("**/*.{csproj}", "Projeler okunamadı");
+        return this.find("**/*.{csproj}", "Could not read projects");
     }
 
     /**
-   * Tüm .sln dosyalarını bulur
+   * Finds every .sln file.
    */
     async findSolutions(): Promise<vscode.Uri[]> {
-        return this.find("**/*.{sln,slnx}", "Solution dosyaları okunamadı");
+        return this.find("**/*.{sln,slnx}", "Could not read solution files");
     }
 
     /**
-     * Central Package Management dosyalarını bulur
-     * (Directory.Packages.props)
+     * Finds Central Package Management files
+     * (Directory.Packages.props).
      */
     async findCentralPackageManagementFiles(): Promise<vscode.Uri[]> {
-        return this.find("**/Directory.Packages.props", "CPM dosyaları okunamadı");
+        return this.find("**/Directory.Packages.props", "Could not read CPM files");
     }
 
     /**
-     * NuGet.config dosyalarını bulur (hierarchical destek için)
+     * Finds NuGet.config files, including nested ones.
      */
     async findNuGetConfigs(): Promise<vscode.Uri[]> {
-        return this.find("**/{NuGet.config,nuget.config,NuGet.Config}", "NuGet.config okunamadı");
+        return this.find("**/{NuGet.config,nuget.config,NuGet.Config}", "Could not read NuGet.config");
     }
 
     private async find(pattern: string, failure: string): Promise<vscode.Uri[]> {
@@ -59,8 +59,8 @@ export class WorkspaceScanner {
     }
 
     /**
-     * Proje adını dosya yolundan çıkarır
-     * Örnek: /src/MyApi/MyApi.csproj → MyApi
+     * Reads the project name from the file path.
+     * Example: /src/MyApi/MyApi.csproj → MyApi
      */
     getProjectName(projectUri: vscode.Uri): string {
         return path.basename(projectUri.fsPath, ".csproj");

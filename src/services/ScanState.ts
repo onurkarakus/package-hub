@@ -51,7 +51,7 @@ export class ScanState {
             return { healthy: true, text: "$(check) Packages healthy" };
         }
         if (vulnerable + outdated + deprecated === 0) {
-            return { healthy: false, text: "$(warning) Audit kaynağı" };
+            return { healthy: false, text: "$(warning) Audit source" };
         }
         return {
             healthy: false,

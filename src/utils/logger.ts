@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 
 /**
- * PackageHub için merkezi log kanalı.
- * View → Output → “PackageHub” seçerek görebilirsin.
+ * Central log channel for PackageHub.
+ * View → Output → select “PackageHub”.
  */
 export const logger = vscode.window.createOutputChannel("PackageHub", {
     log: true,

@@ -32,7 +32,7 @@ export function latestReleasePreferred(packageId: string, version: string): bool
 export async function loadReleaseAges(): Promise<void> {
     const targets = releaseTargets();
     if (targets.length === 0) {
-        logger.info("Yaş kaydı hazır.");
+        logger.info("Release-age record is ready.");
         return;
     }
 
@@ -51,10 +51,10 @@ export async function loadReleaseAges(): Promise<void> {
     }
 
     if (ready === 0) {
-        throw new Error(firstError || "Latest yayın tarihi okunamadı.");
+        throw new Error(firstError || "Could not read the latest publish date.");
     }
 
-    logger.info("Yaş kaydı hazır.");
+    logger.info("Release-age record is ready.");
 }
 
 function releaseTargets(): { id: string; version: string }[] {

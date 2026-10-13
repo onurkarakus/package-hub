@@ -102,7 +102,7 @@ suite("GraphBuilder", () => {
             project: { restore: { projectName: "Empty" } },
         });
 
-        assert.strictEqual(graph.error, "Kenar yok. Uydurulmadı.");
+        assert.strictEqual(graph.error, "No edges. Nothing was invented.");
     });
 
     test("a missing assets file is not invented", async () => {
@@ -111,7 +111,7 @@ suite("GraphBuilder", () => {
             const graph = await GraphBuilder.fromProject(path.join(root, "AuditQuickFix.csproj"));
             assert.deepStrictEqual(graph.nodes, []);
             assert.deepStrictEqual(graph.edges, []);
-            assert.strictEqual(graph.error, "project.assets.json yok. Kenar uydurulmadı.");
+            assert.strictEqual(graph.error, "project.assets.json is missing. No edge was invented.");
             assert.deepStrictEqual(directReferencer(graph, "Newtonsoft.Json"), {
                 known: false,
                 inGraph: false,
@@ -128,7 +128,7 @@ suite("GraphBuilder", () => {
             await fs.writeFile(path.join(root, "obj", "project.assets.json"), "{", "utf8");
             const graph = await GraphBuilder.fromProject(path.join(root, "AuditQuickFix.csproj"));
             assert.deepStrictEqual(graph.nodes, []);
-            assert.strictEqual(graph.error, "project.assets.json okunamadı. Kenar uydurulmadı.");
+            assert.strictEqual(graph.error, "project.assets.json could not be read. No edge was invented.");
         } finally {
             await fs.rm(root, { recursive: true, force: true });
         }

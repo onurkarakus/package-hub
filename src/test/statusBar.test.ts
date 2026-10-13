@@ -46,7 +46,7 @@ suite("Status bar", () => {
         ScanState.setAuditDataGap(true);
         const status = ScanState.statusBarLabel();
         assert.strictEqual(status.healthy, false);
-        assert.strictEqual(status.text, "$(warning) Audit kaynağı");
+        assert.strictEqual(status.text, "$(warning) Audit source");
     });
 
     test("zero problems say healthy", () => {

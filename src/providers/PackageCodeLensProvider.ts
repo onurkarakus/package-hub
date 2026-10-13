@@ -106,7 +106,7 @@ export class PackageCodeLensProvider implements vscode.CodeLensProvider, vscode.
             title: `⚠ ${severity}`,
             command: ready ? "packageHub.quickFixBlocked" : "packageHub.codeLensPending",
             arguments: [ready
-                ? `${packageId} için patch sürümü yok. Güncelleme başlatılmadı.`
+                ? `No patch version for ${packageId}. The update was not started.`
                 : undefined],
         });
     }

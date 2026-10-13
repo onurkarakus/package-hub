@@ -282,7 +282,7 @@ async function projectNodes(): Promise<PackageHubTreeItem[]> {
         items.push(new PackageHubTreeItem(name, vscode.TreeItemCollapsibleState.Collapsed, {
             projectPath: project.fsPath,
             resourceUri: project,
-            description: rows ? projectHealthText(rows) : "csproj okunamadı.",
+            description: rows ? projectHealthText(rows) : "Could not read the csproj.",
             icon: rows ? projectIcon(rows) : new vscode.ThemeIcon("error", errorColor),
             tooltip: project.fsPath,
         }));
@@ -294,7 +294,7 @@ async function packagesForProject(projectPath: string): Promise<PackageHubTreeIt
     const rows = await readProjectPackages(projectPath);
     if (!rows) {
         return [
-            new PackageHubTreeItem("csproj okunamadı.", vscode.TreeItemCollapsibleState.None, {
+            new PackageHubTreeItem("Could not read the csproj.", vscode.TreeItemCollapsibleState.None, {
                 icon: new vscode.ThemeIcon("error", errorColor),
             }),
         ];
@@ -309,7 +309,7 @@ async function packagesForProject(projectPath: string): Promise<PackageHubTreeIt
         return [
             new PackageHubTreeItem("No packages", vscode.TreeItemCollapsibleState.None, {
                 icon: new vscode.ThemeIcon("info", infoColor),
-                tooltip: "Bu dosyada PackageReference yok.",
+                tooltip: "No PackageReference in this file.",
             }),
         ];
     }

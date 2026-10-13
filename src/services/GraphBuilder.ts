@@ -45,7 +45,7 @@ export class GraphBuilder {
                 projectName,
                 nodes: [],
                 edges: [],
-                error: "project.assets.json yok. Kenar uydurulmadı.",
+                error: "project.assets.json is missing. No edge was invented.",
             };
         }
 
@@ -56,7 +56,7 @@ export class GraphBuilder {
                 projectName,
                 nodes: [],
                 edges: [],
-                error: "project.assets.json okunamadı. Kenar uydurulmadı.",
+                error: "project.assets.json could not be read. No edge was invented.",
             };
         }
     }
@@ -164,7 +164,7 @@ export function buildPackageGraph(
     };
 
     if (graph.edges.length === 0) {
-        graph.error = "Kenar yok. Uydurulmadı.";
+        graph.error = "No edges. Nothing was invented.";
     }
 
     return graph;
@@ -240,7 +240,7 @@ export function formatWhyTree(graph: PackageGraph, packageIds: string[]): string
 
     const project = graph.nodes.find((node) => node.type === "project");
     if (!project) {
-        return "Kenar yok. Uydurulmadı.";
+        return "No edges. Nothing was invented.";
     }
 
     const wanted = new Set(packageIds.map((id) => id.toLowerCase()));
@@ -249,7 +249,7 @@ export function formatWhyTree(graph: PackageGraph, packageIds: string[]): string
         : pathLabels(graph, project.id, wanted);
 
     if (labels.length === 0) {
-        return "Kenar yok. Uydurulmadı.";
+        return "No edges. Nothing was invented.";
     }
 
     const root: TreeBranch = { label: project.label, children: new Map() };
@@ -276,7 +276,7 @@ export function formatNodePath(graphs: PackageGraph[], packageId: string): strin
     for (const graph of graphs) {
         if (!graph.error) {
             const path = formatWhyTree(graph, [packageId]);
-            if (path !== "Kenar yok. Uydurulmadı.") {
+            if (path !== "No edges. Nothing was invented.") {
                 toRoot.push(path);
             }
         }
@@ -305,13 +305,13 @@ export function formatNodePath(graphs: PackageGraph[], packageId: string): strin
     }
 
     const depends = dependsOn.size === 0
-        ? "Bağımlılığı yok."
+        ? "No dependencies."
         : Array.from(dependsOn).sort().join("\n");
     const usedBy = dependents.size === 0
-        ? "Bağımlı yok."
+        ? "No dependents."
         : Array.from(dependents).sort().join("\n");
     const roots = toRoot.length === 0
-        ? "Kenar yok. Uydurulmadı."
+        ? "No edges. Nothing was invented."
         : toRoot.join("\n\n");
 
     return [

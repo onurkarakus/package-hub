@@ -72,7 +72,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
                 try {
                     await this.cachedLists(projectPath);
                 } catch (error: any) {
-                    logger.error(`Patch sürümü okunamadı (${projectPath}): ${error.message}`);
+                    logger.error(`Could not read the patch version (${projectPath}): ${error.message}`);
                 }
             }));
         }
@@ -140,7 +140,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
             try {
                 lists = await this.cachedLists(projectPath);
             } catch (error: any) {
-                logger.error(`Quick Fix sürüm okunamadı (${packageId}): ${error.message}`);
+                logger.error(`Could not read the Quick Fix version (${packageId}): ${error.message}`);
             }
         }
 
@@ -163,9 +163,9 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         if (origin?.absentFromGraph) {
             actions.push(this.commandAction(
-                "PackageHub: bu uyarı paket grafiğinde kalmış olabilir",
+                "PackageHub: this warning may be left over in the package graph",
                 "packageHub.quickFixBlocked",
-                ["bu uyarı paket grafiğinde kalmış olabilir"],
+                ["this warning may be left over in the package graph"],
                 false
             ));
             if (advisory) {
@@ -252,7 +252,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
             actions.push(this.commandAction(
                 `PackageHub: No patch version for ${packageId}. Update was not started.`,
                 "packageHub.quickFixBlocked",
-                [`${packageId} için patch sürümü yok. Güncelleme başlatılmadı.`],
+                [`No patch version for ${packageId}. The update was not started.`],
                 false
             ));
         }

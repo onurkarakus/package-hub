@@ -2,14 +2,15 @@
   "name": "package-hub",
   "publisher": "packagehub",
   "displayName": "PackageHub",
-  "description": "Intelligent Package & Project Reference Hub for .NET / C# developers. Explains yellow warnings, shows vulnerabilities & outdated packages.",
+  "description": "Manage your NuGet packages in the editor. See which ones need attention, then update them in a few clicks.",
   "version": "0.0.1",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.125.0"
   },
   "categories": [
-    "Other",
-    "Programming Languages"
+    "Linters",
+    "Other"
   ],
   "keywords": [
     "nuget",
@@ -19,8 +20,12 @@
     "vulnerability",
     "dependencies"
   ],
+  "icon": "media/packagehub-logo.png",
+  "galleryBanner": {
+    "color": "#184E57",
+    "theme": "dark"
+  },
   "activationEvents": [
-    "onStartupFinished",
     "onLanguage:csharp",
     "workspaceContains:**/*.{csproj,sln,props}"
   ],
@@ -140,17 +145,17 @@
               "byPackage"
             ],
             "default": "list",
-            "description": "Dashboard paket görünüm modu"
+            "description": "Dashboard layout: list, by project, or by package."
           },
           "packageHub.scanOnStartup": {
             "type": "boolean",
             "default": true,
-            "description": "Workspace açılınca otomatik paket taraması yap"
+            "description": "Scan packages when the workspace opens."
           },
           "packageHub.includePrerelease": {
             "type": "boolean",
             "default": false,
-            "description": "Eski paket listesinde ön sürümleri de göster. Kapalıdır. Açık taraması değişmez. Sonraki taramada uygulanır."
+            "description": "Include prereleases in the next outdated list. Off by default. The vulnerability scan is unchanged. Applied on the next scan."
           },
           "packageHub.minimumSeverity": {
             "type": "string",
@@ -161,13 +166,13 @@
               "critical"
             ],
             "default": "low",
-            "description": "PackageHub’un raporladığı en düşük açık seviyesi. Projedeki NuGetAuditLevel değişmez."
+            "description": "Lowest severity PackageHub reports. Does not change NuGetAuditLevel in the project."
           },
           "packageHub.minimumReleaseAge": {
             "type": "number",
             "default": 0,
             "minimum": 0,
-            "description": "Latest sürümün tercih edilmesi için en az kaç gün önce yayınlanmış olması. 0 kapalıdır. Highest patch bu kapıya girmez."
+            "description": "How many days old a latest version must be before it is preferred. 0 is off. Highest patch ignores this."
           },
           "packageHub.ignoredPackages": {
             "type": "array",
@@ -175,7 +180,7 @@
               "type": "string"
             },
             "default": [],
-            "description": "Scan sonuçlarından gizlenecek paket id listesi"
+            "description": "Package ids to hide from scan results."
           }
         }
       }

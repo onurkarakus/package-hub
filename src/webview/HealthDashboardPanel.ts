@@ -168,11 +168,11 @@ export class HealthDashboardPanel {
     const sourcesText = !sources
       ? ""
       : sources.unreadable
-        ? "NuGet.config okunamadı."
+        ? "Could not read NuGet.config."
         : !sources.found
-          ? "NuGet.config yok."
+          ? "No NuGet.config."
           : sources.names.length === 0
-            ? "Kaynak yok."
+            ? "No sources."
             : `Sources: ${escapeHtml(sources.names.join(", "))}`;
 
     const viewMode =
@@ -331,7 +331,7 @@ export class HealthDashboardPanel {
             return `
           <details open data-package-id="${escapeHtml(c.id)}" data-severity="${escapeHtml(packageSeverity({ id: c.id }))}">
             <summary>
-              ${packageNameButton(c.id)} (${c.versions.length} farklı versiyon)
+              ${packageNameButton(c.id)} (${c.versions.length} different versions)
                 ${alignBtn}
               </summary>
               <table>
@@ -711,7 +711,7 @@ export class HealthDashboardPanel {
   </div>
 
   ${sourcesText ? `<p class="sources">${sourcesText}</p>` : ""}
-  ${auditDataGap ? `<p class="sources">audit kaynağı vulnerability verisi vermedi</p>` : ""}
+  ${auditDataGap ? `<p class="sources">the audit source did not return vulnerability data</p>` : ""}
 
   <div class="safe-actions">
     <button onclick="refresh()">Refresh Scan</button>
@@ -731,9 +731,9 @@ export class HealthDashboardPanel {
   </div>
 
   <div class="view-switch">
-    <button class="${viewMode === "list" ? "active" : ""}" onclick="setViewMode('list')">Liste</button>
-    <button class="${viewMode === "byProject" ? "active" : ""}" onclick="setViewMode('byProject')">Proje bazlı</button>
-    <button class="${viewMode === "byPackage" ? "active" : ""}" onclick="setViewMode('byPackage')">Paket bazlı</button>
+    <button class="${viewMode === "list" ? "active" : ""}" onclick="setViewMode('list')">List</button>
+    <button class="${viewMode === "byProject" ? "active" : ""}" onclick="setViewMode('byProject')">By project</button>
+    <button class="${viewMode === "byPackage" ? "active" : ""}" onclick="setViewMode('byPackage')">By package</button>
   </div>
 
   ${contentHtml}

@@ -50,7 +50,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         }
 
         this.affectedProjectPaths = [...affected];
-        logger.info(`NU190x tanı güncellendi. Etkilenen proje: ${this.affectedProjectPaths.length}`);
+        logger.info(`NU190x diagnostics updated. Affected projects: ${this.affectedProjectPaths.length}`);
     }
 
     dispose(): void {
@@ -100,7 +100,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         try {
             text = await fs.readFile(uri.fsPath, "utf8");
         } catch (error: any) {
-            logger.error(`Tanı için dosya okunamadı (${uri.fsPath}): ${error.message}`);
+            logger.error(`Could not read the file for diagnostics (${uri.fsPath}): ${error.message}`);
             return [];
         }
 
@@ -187,7 +187,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
             : "";
         const transitiveWord = transitive ? ` is transitive${via} and` : "";
         const pruned = transitive && origin?.absentFromGraph
-            ? ". bu uyarı paket grafiğinde kalmış olabilir"
+            ? ". this warning may be left over in the package graph"
             : "";
         const diagnostic = new vscode.Diagnostic(
             range,
