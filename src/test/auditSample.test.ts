@@ -11,8 +11,8 @@ suite("Audit sample", function () {
         const folder = workspaceFolder();
         assert.ok(folder.fsPath.endsWith(path.join("samples", "audit-quickfix")));
 
-        const extension = vscode.extensions.getExtension("packagehub.package-hub");
-        assert.ok(extension, "packagehub.package-hub is not installed");
+        const extension = vscode.extensions.getExtension("onurkarakus.package-hub");
+        assert.ok(extension, "onurkarakus.package-hub is not installed");
         await extension.activate();
 
         const commands = await vscode.commands.getCommands(true);
@@ -34,7 +34,7 @@ suite("Audit sample", function () {
     });
 
     test("the marketplace icon is a png and the activity bar stays a codicon", async () => {
-        const extension = vscode.extensions.getExtension("packagehub.package-hub");
+        const extension = vscode.extensions.getExtension("onurkarakus.package-hub");
         assert.ok(extension);
         const manifest = extension.packageJSON;
         assert.strictEqual(manifest.icon, "media/packagehub-logo.png");
