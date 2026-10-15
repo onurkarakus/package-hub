@@ -96,7 +96,6 @@ export async function refreshNuGetSources(scanner: WorkspaceScanner): Promise<vo
 
     if (files.length === 0) {
         ScanState.setPackageSources({ found: false, unreadable: false, names: [] });
-        logger.info("No NuGet.config.");
         return;
     }
 
@@ -116,5 +115,4 @@ export async function refreshNuGetSources(scanner: WorkspaceScanner): Promise<vo
 
     const names = mergePackageSourceNames(parts);
     ScanState.setPackageSources({ found: true, unreadable: false, names });
-    logger.info(names.length > 0 ? `Source: ${names.join(", ")}` : "No sources.");
 }

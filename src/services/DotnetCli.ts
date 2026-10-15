@@ -3,6 +3,7 @@ import { promisify } from "util";
 import * as vscode from "vscode";
 import { PackageInfo } from "../models/PackageInfo";
 import { logger } from "../utils/logger";
+import { vsToolsEnvironment } from "./VsToolsPath";
 import { pbkdf2 } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -24,6 +25,7 @@ export class DotnetCli {
                 timeout: timeoutMs,
                 maxBuffer: 10 * 1024 * 1024,
                 signal,
+                env: await this.commandEnv(),
             });
 
             if (stdout && stdout.trim()) {
@@ -53,6 +55,20 @@ export class DotnetCli {
 
             const detail = error.stderr || error.stdout || error.message || String(error);
             throw new Error(`dotnet command failed: ${detail}`);
+        }
+    }
+
+    private async commandEnv(): Promise<NodeJS.ProcessEnv | undefined> {
+        try {
+            const extra = await vsToolsEnvironment();
+            if (!extra) {
+                return undefined;
+            }
+
+            return { ...process.env, ...extra };
+        } catch (error: any) {
+            logger.info(`Visual Studio web targets were not added: ${error?.message || error}`);
+            return undefined;
         }
     }
 

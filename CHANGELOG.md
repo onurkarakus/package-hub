@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.0.2] - 2026-10-14
+
+### Added
+
+- A package line in an open `.csproj` or `.props` file shows a status mark after a scan. A vulnerable package shows a warning mark, an outdated package shows a cross and the newer version, and a deprecated package shows its own mark. The yellow warning underline stays.
+
+### Fixed
+
+- A solution scan keeps the projects it can read when an old web project cannot import `Microsoft.WebApplication.targets`.
+- Projects that still cannot load are named and skipped. The rest of the solution stays in the results.
+- On Windows, when Visual Studio is installed, the scan uses that installation's web targets so those projects can be read too.
+
+### Changed
+
+- The Output panel no longer lists every package, project, or scan step. It keeps the scan summary, skipped projects, and failures. Those lines are in English.
+
 ## [0.0.1] - 2026-10-13
 
 ### Added

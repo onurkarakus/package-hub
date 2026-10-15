@@ -63,7 +63,7 @@ export class DependencyGraphPanel {
     private async _update() {
         const packageId = this.packageId;
         this._panel.title = packageId;
-        this._panel.webview.html = this._getHtml(packageId, "Yol okunuyor.");
+        this._panel.webview.html = this._getHtml(packageId, "Reading the path.");
 
         const text = await this.loadPath(packageId);
         if (DependencyGraphPanel.currentPanel !== this || this.packageId !== packageId) {

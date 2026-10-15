@@ -1,4 +1,3 @@
-import { logger } from "../utils/logger";
 import { firstFixedFromRanges, versionInsideRange } from "../utils/nugetAudit";
 
 export type AdvisoryVerdict = "open" | "closed" | "unknown";
@@ -106,7 +105,6 @@ export function loadAdvisoryCatalog(): Promise<void> {
         pending = fetchCatalog()
             .then(() => {
                 ready = true;
-                logger.info("Advisory record is ready.");
             })
             .catch((error) => {
                 pending = undefined;

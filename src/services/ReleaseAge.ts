@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import { ScanState } from "./ScanState";
-import { logger } from "../utils/logger";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const published = new Map<string, Date | null>();
@@ -32,7 +31,6 @@ export function latestReleasePreferred(packageId: string, version: string): bool
 export async function loadReleaseAges(): Promise<void> {
     const targets = releaseTargets();
     if (targets.length === 0) {
-        logger.info("Release-age record is ready.");
         return;
     }
 
@@ -54,7 +52,6 @@ export async function loadReleaseAges(): Promise<void> {
         throw new Error(firstError || "Could not read the latest publish date.");
     }
 
-    logger.info("Release-age record is ready.");
 }
 
 function releaseTargets(): { id: string; version: string }[] {

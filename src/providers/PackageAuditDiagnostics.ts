@@ -50,7 +50,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         }
 
         this.affectedProjectPaths = [...affected];
-        logger.info(`NU190x diagnostics updated. Affected projects: ${this.affectedProjectPaths.length}`);
+
     }
 
     dispose(): void {

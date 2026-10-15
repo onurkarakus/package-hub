@@ -17,6 +17,7 @@ import { restoreLastScan, saveLastScan } from "./services/LastScanStore";
 import { buildHealthReport } from "./services/HealthReport";
 import { buildVulnerabilityReport } from "./services/VulnerabilityReport";
 import { chooseQuickFixVersions, isSafeChannelTarget, readPackageRef } from "./utils/nugetAudit";
+import { isProjectLoadFailure, projectLoadSummary } from "./services/ProjectLoadFailure";
 import {
 	classicSolutionPaths,
 	readSolutionProjects,
@@ -27,6 +28,7 @@ import { isPackageProjectFile, ScanGate } from "./services/ScanGate";
 import { PackageAuditDiagnostics } from "./providers/PackageAuditDiagnostics";
 import { PackageCodeActionProvider } from "./providers/PackageCodeActionProvider";
 import { PackageCodeLensProvider } from "./providers/PackageCodeLensProvider";
+import { PackageLineDecorations } from "./providers/PackageLineDecorations";
 import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
 import { DependencyGraphPanel } from "./webview/DependencyGraphPanel";
 
@@ -172,6 +174,7 @@ interface TargetScan {
 	outdated: any[];
 	deprecated: any[];
 	patch: any[];
+	loadError?: string;
 }
 
 async function scanOneTarget(
@@ -180,21 +183,11 @@ async function scanOneTarget(
 	label: string,
 	signal: AbortSignal
 ): Promise<TargetScan> {
-	logger.info(`[${label}] vulnerable started`);
-	logger.info(`[${label}] outdated started`);
-	logger.info(`[${label}] deprecated started`);
-
-	const track = (name: string, work: Promise<any[]>) =>
-		work.then((value) => {
-			logger.info(`[${label}] ${name} bitti`);
-			return value;
-		});
-
 	const settled = await Promise.allSettled([
-		track("vulnerable", cli.listVulnerable(targetPath, true, signal)),
-		track("outdated", cli.listOutdated(targetPath, false, "latest", signal, ScanState.includePrerelease())),
-		track("deprecated", cli.listDeprecated(targetPath, signal)),
-		track("patch", cli.listOutdated(targetPath, false, "patch", signal, ScanState.includePrerelease())),
+		cli.listVulnerable(targetPath, true, signal),
+		cli.listOutdated(targetPath, false, "latest", signal, ScanState.includePrerelease()),
+		cli.listDeprecated(targetPath, signal),
+		cli.listOutdated(targetPath, false, "patch", signal, ScanState.includePrerelease()),
 	]);
 
 	if (settled.some((result) =>
@@ -205,6 +198,20 @@ async function scanOneTarget(
 	}
 
 	const names = ["vulnerable", "outdated", "deprecated", "patch"] as const;
+	const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+	if (failures.length === names.length) {
+		const message = String(failures[0].reason?.message || failures[0].reason);
+		if (isProjectLoadFailure(message)) {
+			return {
+				vulnerable: [],
+				outdated: [],
+				deprecated: [],
+				patch: [],
+				loadError: message,
+			};
+		}
+	}
+
 	const lists = names.map((name, index) => {
 		const result = settled[index];
 		if (result.status === "fulfilled") {
@@ -243,14 +250,9 @@ function attachHighestPatch(groups: any[][], patch: any[]): void {
 
 async function restoreForProjects(projectPaths: string[]): Promise<void> {
 	const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
-	for (const skipped of slnxPaths(found)) {
-		logger.info(`.slnx skipped: ${skipped}`);
-	}
-
 	const solutions = classicSolutionPaths(found);
 	if (projectPaths.length === 0) {
 		for (const solutionPath of solutions) {
-			logger.info(`Restore: ${solutionPath}`);
 			await dotnetCli.restore(solutionPath);
 		}
 		return;
@@ -264,7 +266,6 @@ async function restoreForProjects(projectPaths: string[]): Promise<void> {
 	}
 
 	for (const target of restoreTargetsForProjects(membership, projectPaths)) {
-		logger.info(`Restore: ${target}`);
 		await dotnetCli.restore(target);
 	}
 }
@@ -320,7 +321,7 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 				}
 
 				const projectName = workspaceScanner.getProjectName(project);
-				progress.report({ message: `${label} okunuyor… ${projectName}` });
+				progress.report({ message: `Reading ${label}: ${projectName}` });
 
 				try {
 					const listed = await dotnetCli.listOutdated(
@@ -376,7 +377,6 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	);
 
 	if (confirm !== "Yes, Update") {
-		logger.info(`${label} was cancelled.`);
 		return;
 	}
 
@@ -393,8 +393,8 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 						message: `${target.packageId} → ${target.to} (${target.projectName})`,
 					});
 					await dotnetCli.updatePackage(target.projectPath, target.packageId, target.to);
-					logger.info(`Updated: ${target.packageId} → ${target.to} (${target.projectPath})`);
 				}
+				logger.info(`${label}: updated ${targets.length} packages.`);
 
 				progress.report({ message: "Restore is running..." });
 				const updatedProjects = [...new Set(targets.map((target) => target.projectPath))];
@@ -421,8 +421,6 @@ function paintScanStatus(item: vscode.StatusBarItem): void {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-	logger.info("PackageHub aktif edildi.");
-
 	// Servisler
 	dotnetCli = new DotnetCli();
 	workspaceScanner = new WorkspaceScanner();
@@ -458,8 +456,10 @@ export function activate(context: vscode.ExtensionContext) {
 	const auditDiagnostics = new PackageAuditDiagnostics(workspaceScanner);
 	const codeActionProvider = new PackageCodeActionProvider(dotnetCli, workspaceScanner);
 	const codeLensProvider = new PackageCodeLensProvider(codeActionProvider, workspaceScanner);
+	const lineDecorations = new PackageLineDecorations(workspaceScanner);
 	context.subscriptions.push(
 		codeLensProvider,
+		lineDecorations,
 		vscode.languages.registerCodeLensProvider(
 			{ scheme: "file", pattern: "**/*.{csproj,props}" },
 			codeLensProvider
@@ -468,31 +468,21 @@ export function activate(context: vscode.ExtensionContext) {
 	if (ScanState.getScannedAt()) {
 		void auditDiagnostics.refresh().finally(() => {
 			codeLensProvider.refresh();
+			lineDecorations.refresh();
 		});
 	}
 
 	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
 		if (event.affectsConfiguration("packageHub.minimumSeverity")) {
-			const minimum = vscode.workspace.getConfiguration("packageHub").get<string>("minimumSeverity") || "low";
-			logger.info(`Severity threshold: ${minimum}`);
 			paintScanStatus(statusBarItem);
 			treeProvider.refresh();
 			HealthDashboardPanel.refreshIfOpen();
 			codeLensProvider.refresh();
+			lineDecorations.refresh();
 			void auditDiagnostics.refresh();
 		}
 
-		if (event.affectsConfiguration("packageHub.minimumReleaseAge")) {
-			const days = vscode.workspace.getConfiguration("packageHub").get<number>("minimumReleaseAge");
-			logger.info(typeof days === "number" && days > 0
-				? `Age gate: ${days} days`
-				: "Age gate is off.");
-		}
-
 		if (event.affectsConfiguration("packageHub.includePrerelease")) {
-			logger.info(ScanState.includePrerelease()
-				? "Prerelease is on. It applies on the next scan."
-				: "Prerelease is off. It applies on the next scan.");
 			codeActionProvider.clearCache();
 		}
 	}));
@@ -897,7 +887,6 @@ export function activate(context: vscode.ExtensionContext) {
 					const cancelSub = token.onCancellationRequested(() => abort.abort());
 
 					try {
-						logger.show(true);
 						logger.info(`Scan started: ${workspaceRoot}`);
 
 						// Clear the cache on every scan.
@@ -907,10 +896,53 @@ export function activate(context: vscode.ExtensionContext) {
 						let outdated: any[] = [];
 						let deprecated: any[] = [];
 						let patch: any[] = [];
+						const skipped: string[] = [];
+						const buckets = {
+							vulnerable: [] as any[],
+							outdated: [] as any[],
+							deprecated: [] as any[],
+							patch: [] as any[],
+						};
+
+						const remember = (lists: TargetScan) => {
+							buckets.vulnerable.push(...lists.vulnerable);
+							buckets.outdated.push(...lists.outdated);
+							buckets.deprecated.push(...lists.deprecated);
+							buckets.patch.push(...lists.patch);
+						};
+
+						const scanProjectPaths = async (projectPaths: string[]) => {
+							await runPool(projectPaths.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
+								const projectPath = projectPaths[index];
+								const label = path.basename(projectPath, ".csproj");
+								progress.report({ message: `${index + 1}/${projectPaths.length} ${label}` });
+								try {
+									const lists = await scanOneTarget(
+										dotnetCli,
+										projectPath,
+										label,
+										abort.signal
+									);
+									if (lists.loadError) {
+										skipped.push(projectPath);
+										logger.info(`Skipped ${projectPath}. ${projectLoadSummary(lists.loadError)}`);
+										return;
+									}
+
+									remember(lists);
+								} catch (projectError: any) {
+									logger.error(`Could not scan the project (${projectPath}): ${projectError.message}`);
+									if (String(projectError.message).includes("`dotnet` was not found")) {
+										abort.abort();
+										throw projectError;
+									}
+								}
+							});
+						};
 
 						const foundSolutions = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
-						for (const skipped of slnxPaths(foundSolutions)) {
-							logger.info(`.slnx skipped: ${skipped}`);
+						for (const slnx of slnxPaths(foundSolutions)) {
+							logger.info(`.slnx skipped: ${slnx}`);
 						}
 						const solutions = classicSolutionPaths(foundSolutions);
 
@@ -920,17 +952,10 @@ export function activate(context: vscode.ExtensionContext) {
 						}
 
 						if (solutions.length > 0) {
-							logger.info(`${solutions.length} solution taranacak.`);
-							const allVulnerable: any[] = [];
-							const allOutdated: any[] = [];
-							const allDeprecated: any[] = [];
-							const allPatch: any[] = [];
-
 							await runPool(solutions.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
 								const targetPath = solutions[index];
 								const label = path.basename(targetPath);
 								progress.report({ message: `${index + 1}/${solutions.length} ${label}` });
-								logger.info(`Scanning solution: ${targetPath}`);
 
 								try {
 									const lists = await scanOneTarget(
@@ -939,10 +964,19 @@ export function activate(context: vscode.ExtensionContext) {
 										label,
 										abort.signal
 									);
-									allVulnerable.push(...lists.vulnerable);
-									allOutdated.push(...lists.outdated);
-									allDeprecated.push(...lists.deprecated);
-									allPatch.push(...lists.patch);
+									if (!lists.loadError) {
+										remember(lists);
+										return;
+									}
+
+									logger.info(`The solution could not be loaded in one pass. Scanning its projects: ${targetPath}`);
+									const projects = (await readSolutionProjects([targetPath]))[0]?.projects ?? [];
+									if (projects.length === 0) {
+										logger.error(`Could not scan the solution (${targetPath}): ${projectLoadSummary(lists.loadError)}`);
+										return;
+									}
+
+									await scanProjectPaths(projects);
 								} catch (solutionError: any) {
 									logger.error(`Could not scan the solution (${targetPath}): ${solutionError.message}`);
 									if (String(solutionError.message).includes("`dotnet` was not found")) {
@@ -951,11 +985,6 @@ export function activate(context: vscode.ExtensionContext) {
 									}
 								}
 							});
-
-							vulnerable = mergeById(allVulnerable);
-							outdated = mergeById(allOutdated);
-							deprecated = mergeById(allDeprecated);
-							patch = mergeById(allPatch);
 						} else {
 							// 2. When there is no solution, scan every project.
 							const projects = await workspaceScanner.findProjects();
@@ -967,43 +996,20 @@ export function activate(context: vscode.ExtensionContext) {
 								return;
 							}
 
-							logger.info(`${projects.length} proje bulundu, hepsi taranacak...`);
+							await scanProjectPaths(projects.map((project) => project.fsPath));
+						}
 
-							const allVulnerable: any[] = [];
-							const allOutdated: any[] = [];
-							const allDeprecated: any[] = [];
-							const allPatch: any[] = [];
+						vulnerable = mergeById(buckets.vulnerable);
+						outdated = mergeById(buckets.outdated);
+						deprecated = mergeById(buckets.deprecated);
+						patch = mergeById(buckets.patch);
 
-							await runPool(projects.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
-								const project = projects[index];
-								const label = workspaceScanner.getProjectName(project);
-								progress.report({ message: `${index + 1}/${projects.length} ${label}` });
-								logger.info(`Scanning: ${project.fsPath}`);
-
-								try {
-									const lists = await scanOneTarget(
-										dotnetCli,
-										project.fsPath,
-										label,
-										abort.signal
-									);
-									allVulnerable.push(...lists.vulnerable);
-									allOutdated.push(...lists.outdated);
-									allDeprecated.push(...lists.deprecated);
-									allPatch.push(...lists.patch);
-								} catch (projectError: any) {
-									logger.error(`Could not scan the project (${project.fsPath}): ${projectError.message}`);
-									if (String(projectError.message).includes("`dotnet` was not found")) {
-										abort.abort();
-										throw projectError;
-									}
-								}
-							});
-
-							vulnerable = mergeById(allVulnerable);
-							outdated = mergeById(allOutdated);
-							deprecated = mergeById(allDeprecated);
-							patch = mergeById(allPatch);
+						if (skipped.length > 0) {
+							const names = skipped.slice(0, 3).map((item) => path.basename(item, ".csproj"));
+							const extra = skipped.length > 3 ? ` and ${skipped.length - 3} more` : "";
+							vscode.window.showWarningMessage(
+								`PackageHub skipped ${skipped.length} project${skipped.length === 1 ? "" : "s"} that dotnet could not load: ${names.join(", ")}${extra}. The other projects were scanned.`
+							);
 						}
 
 						if (token.isCancellationRequested) {
@@ -1053,11 +1059,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 						try {
 							await refreshCentralPackages(workspaceScanner);
-							logger.info(
-								ScanState.getCpm()
-									? `CPM: ${ScanState.getCentralVersionCount()} versions`
-									: "CPM: none"
-							);
 						} catch (cpmError: any) {
 							logger.error(`Could not read CPM: ${cpmError.message}`);
 						}
@@ -1093,45 +1094,19 @@ export function activate(context: vscode.ExtensionContext) {
 
 						codeActionProvider.clearCache();
 						codeLensProvider.refresh();
+						lineDecorations.refresh();
 						try {
 							await auditDiagnostics.refresh();
 							void codeActionProvider.prefetch(auditDiagnostics.affectedProjects())
 								.finally(() => {
-									logger.info("CodeLens patch list is ready.");
 									codeLensProvider.refresh();
+									lineDecorations.refresh();
 								});
 						} catch (diagError: any) {
 							logger.error(`Quick Fix diagnostic error: ${diagError.message}`);
 						}
 
-						//Graph
 						DependencyGraphPanel.refreshIfOpen();
-
-						// Detay log
-						if (vulnerable.length > 0) {
-							logger.info("--- Vulnerable packages ---");
-							vulnerable.forEach((p: any) => {
-								logger.info(
-									`${p.id} ${p.version} [${p.severity || "unknown"}] (${p.projects.join(", ")})`
-								);
-							});
-						}
-
-						if (outdated.length > 0) {
-							logger.info("--- Outdated packages ---");
-							outdated.forEach((p: any) => {
-								logger.info(
-									`${p.id} ${p.version} → ${p.latestVersion || "?"} (${p.projects.join(", ")})`
-								);
-							});
-						}
-
-						if (deprecated.length > 0) {
-							logger.info("--- Deprecated packages ---");
-							deprecated.forEach((p: any) => {
-								logger.info(`${p.id} ${p.version} (${p.projects.join(", ")})`);
-							});
-						}
 					} catch (error: any) {
 						if (token.isCancellationRequested) {
 							logger.info("Scan cancelled. Results were not drawn.");
@@ -1254,10 +1229,8 @@ export function activate(context: vscode.ExtensionContext) {
 							});
 
 							await dotnetCli.updatePackage(project.fsPath, packageId, version);
-							logger.info(
-								`Updated: ${packageId} → ${version} (${project.fsPath})`
-							);
 						}
+						logger.info(`Updated ${packageId} → ${version} in ${projectsToUpdate.length} projects.`);
 
 						// Restore
 						progress.report({ message: "Restore is running..." });
@@ -1376,8 +1349,8 @@ export function activate(context: vscode.ExtensionContext) {
 							});
 							await dotnetCli.removePackage(project.fsPath, packageId);
 							removed += 1;
-							logger.info(`Removed: ${packageId} (${project.fsPath})`);
 						}
+						logger.info(`Removed ${packageId} from ${removed} projects.`);
 
 						vscode.window.showInformationMessage(`${packageId} was removed.`);
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
@@ -1557,7 +1530,6 @@ export function activate(context: vscode.ExtensionContext) {
 						await restoreForProjects(projects.map((project) => project.fsPath));
 
 						vscode.window.showInformationMessage("Restore finished.");
-						logger.info("Restore finished.");
 
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
 					} catch (error: any) {
@@ -1661,7 +1633,7 @@ export function activate(context: vscode.ExtensionContext) {
 					cancellable: false,
 				},
 				async (progress) => {
-					progress.report({ message: `${packageId} neden burada…` });
+					progress.report({ message: `Finding why ${packageId} is here…` });
 
 					try {
 						const text = await dotnetCli.why(selectedProject, packageId);
@@ -1795,7 +1767,6 @@ export function activate(context: vscode.ExtensionContext) {
 		if (!isPackageProjectFile(document.uri.fsPath)) {
 			return;
 		}
-		logger.info(`Scan after save: ${document.uri.fsPath}`);
 		void vscode.commands.executeCommand("packageHub.scanWorkspace");
 	}));
 
@@ -1828,5 +1799,4 @@ function packageReferenceLine(text: string, packageId: string): number {
 }
 
 export function deactivate() {
-	logger.info("PackageHub closed.");
 }
