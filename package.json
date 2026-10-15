@@ -3,7 +3,7 @@
   "publisher": "onurkarakus",
   "displayName": "PackageHub",
   "description": "Manage your NuGet packages in the editor. See which ones need attention, then update them in a few clicks.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "license": "MIT",
   "engines": {
     "vscode": "^1.125.0"

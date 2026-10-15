@@ -4,7 +4,7 @@
 
 You do not have to hunt through project files and yellow warnings. Open the project, let the scan finish, and the package line tells you where things stand. Nothing changes until you choose **Yes, Update**.
 
-![Package lines after a scan. A vulnerable package shows a warning and the newer version, an outdated package shows a cross and the newer version, and a current package shows a check.](media/readme/package-lines.png)
+![Package lines after a scan. A vulnerable package shows a warning and the newer version, an outdated package shows a cross and the newer version, and a current package shows a check.](https://onurkarakus.com.tr/packagehubfiles/package-lines.png)
 
 ## What you can do
 
@@ -18,10 +18,10 @@ You do not have to hunt through project files and yellow warnings. Open the proj
 ## Languages and files
 
 <p>
-  <img src="media/readme/csharp.png" alt="C#" width="48" height="48" />
+  <img src="https://onurkarakus.com.tr/packagehubfiles/csharp.png" alt="C#" width="48" height="48" />
   &nbsp;&nbsp;<strong>C#</strong>
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="media/readme/fsharp.png" alt="F#" width="48" height="48" />
+  <img src="https://onurkarakus.com.tr/packagehubfiles/fsharp.png" alt="F#" width="48" height="48" />
   &nbsp;&nbsp;<strong>F#</strong>
 </p>
 
@@ -56,7 +56,7 @@ The line above a vulnerable package still offers the highest patch in one click.
 4. Open the lightbulb. The first item is **Update to highest patch**. **Update to latest** appears under it when a newer version exists. **Open Advisory** appears when a link exists. The first version that closes the advisory can appear further down. It is not the default.
 5. Confirm the choice. The button says **Yes, Update**. PackageHub then updates the package, restores, and scans again.
 
-![Quick Fix on a vulnerable package. The highest patch is the first choice. Latest and the first fixed version are listed under it.](media/readme/quick-fix.png)
+![Quick Fix on a vulnerable package. The highest patch is the first choice. Latest and the first fixed version are listed under it.](https://onurkarakus.com.tr/packagehubfiles/quick-fix.png)
 
 With Central Package Management, the version is written to `Directory.Packages.props`. You do not edit the project file by hand.
 
@@ -64,7 +64,7 @@ With Central Package Management, the version is written to `Directory.Packages.p
 
 The **PackageHub** icon on the Activity Bar opens your packages.
 
-![Package Health after a scan. Vulnerable and outdated packages are listed, with the project that contains them.](media/readme/package-list.png)
+![Package Health after a scan. Vulnerable and outdated packages are listed, with the project that contains them.](https://onurkarakus.com.tr/packagehubfiles/package-list.png)
 
 `PackageHub: Show Health Dashboard` shows how many need attention and offers the bulk updates.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.4] - 2026-10-15
+
+### Fixed
+
+- Marketplace README images load from public HTTPS addresses. The five screenshots and language icons are on `https://onurkarakus.com.tr/packagehubfiles/`.
+
 ## [0.0.3] - 2026-10-15
 
 ### Added
