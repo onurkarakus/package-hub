@@ -12,6 +12,8 @@ export class ScanState {
     private static vulnerable: PackageInfo[] = [];
     private static outdated: PackageInfo[] = [];
     private static deprecated: PackageInfo[] = [];
+    private static installed: PackageInfo[] = [];
+    private static provenProjects: string[] = [];
     private static scannedAt: Date | undefined;
     private static hasCpm = false;
     private static centralVersions = new Map<string, string>();
@@ -81,11 +83,15 @@ export class ScanState {
         vulnerable: PackageInfo[],
         outdated: PackageInfo[],
         deprecated: PackageInfo[] = [],
-        scannedAt?: Date
+        scannedAt?: Date,
+        installed: PackageInfo[] = [],
+        provenProjects: string[] = []
     ) {
         this.vulnerable = vulnerable;
         this.outdated = outdated;
         this.deprecated = deprecated;
+        this.installed = installed;
+        this.provenProjects = provenProjects;
         this.scannedAt = scannedAt ?? new Date();
     }
 
@@ -103,6 +109,24 @@ export class ScanState {
     }
     static getDeprecated(): PackageInfo[] {
         return this.deprecated;
+    }
+
+    static getInstalled(): PackageInfo[] {
+        return this.installed;
+    }
+
+    static getProvenProjects(): string[] {
+        return this.provenProjects;
+    }
+
+    static isProjectProven(projectName: string): boolean {
+        const needle = projectName.toLowerCase();
+        return this.provenProjects.some((name) => name.toLowerCase() === needle);
+    }
+
+    static findInstalled(packageId: string): PackageInfo | undefined {
+        const id = packageId.toLowerCase();
+        return this.installed.find((pkg) => pkg.id.toLowerCase() === id);
     }
 
     static getScannedAt(): Date | undefined {

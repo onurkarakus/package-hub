@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import * as path from "path";
+import { projectNameFromPath } from "./projectFiles";
 import { logger } from "../utils/logger";
 
 export class WorkspaceScanner {
@@ -18,10 +18,10 @@ export class WorkspaceScanner {
     }
 
     /**
-   * Finds every .csproj file.
+   * Finds every C# and F# project file.
    */
     async findProjects(): Promise<vscode.Uri[]> {
-        return this.find("**/*.{csproj}", "Could not read projects");
+        return this.find("**/*.{csproj,fsproj}", "Could not read projects");
     }
 
     /**
@@ -63,6 +63,6 @@ export class WorkspaceScanner {
      * Example: /src/MyApi/MyApi.csproj → MyApi
      */
     getProjectName(projectUri: vscode.Uri): string {
-        return path.basename(projectUri.fsPath, ".csproj");
+        return projectNameFromPath(projectUri.fsPath);
     }
 }

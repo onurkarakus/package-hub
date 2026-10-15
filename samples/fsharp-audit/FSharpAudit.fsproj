@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Deneme paketi. 12.0.1 için NU1903. Patch 12.0.3 hâlâ açık. Latest 13.0.4 kapatır. -->
+    <PackageReference Include="Newtonsoft.Json" Version="12.0.1" />
+    <!-- Güncel değil. Satırda çarpı ve yeni sürüm görünür. -->
+    <PackageReference Include="Serilog" Version="3.1.1" />
+    <!-- Açık, güncel olmayan ya da kullanımdan kalkmış değilse satırda onay görünür. -->
+    <PackageReference Include="Spectre.Console" Version="0.57.2" />
+  </ItemGroup>
+
+</Project>

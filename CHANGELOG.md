@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.3] - 2026-10-15
+
+### Added
+
+- A package the scan found current shows a check at the end of the line. The check appears only when the installed, vulnerable, outdated, and deprecated lists all include that project. A project the scan could not read stays unmarked.
+- F# project files (`.fsproj`) are scanned and get the same line marks, warnings, and actions as C# projects.
+- `GlobalPackageReference` lines are recognized, including in `Directory.Packages.props`.
+
 ## [0.0.2] - 2026-10-14
 
 ### Added

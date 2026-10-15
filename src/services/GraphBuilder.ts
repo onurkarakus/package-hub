@@ -1,5 +1,6 @@
 import * as fs from "fs/promises";
 import * as path from "path";
+import { projectNameFromPath } from "./projectFiles";
 
 export type GraphSeverity = "Critical" | "High" | "Moderate" | "Low";
 
@@ -34,7 +35,7 @@ export class GraphBuilder {
         projectPath: string,
         severityById?: ReadonlyMap<string, string>
     ): Promise<PackageGraph> {
-        const projectName = path.basename(projectPath, ".csproj");
+        const projectName = projectNameFromPath(projectPath);
         const assetsPath = path.join(path.dirname(projectPath), "obj", "project.assets.json");
 
         let text = "";
@@ -140,7 +141,7 @@ export function buildPackageGraph(
         const framework = asRecord(restoreFrameworks[tfm]) || {};
         const references = asRecord(framework.projectReferences) || {};
         for (const referencePath of Object.keys(references)) {
-            const name = path.basename(referencePath, ".csproj");
+            const name = projectNameFromPath(referencePath);
             if (!name || name.toLowerCase() === projectName.toLowerCase()) {
                 continue;
             }

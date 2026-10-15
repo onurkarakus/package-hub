@@ -29,7 +29,8 @@ suite("Audit sample", function () {
         );
         assert.deepStrictEqual(extension.packageJSON.activationEvents, [
             "onLanguage:csharp",
-            "workspaceContains:**/*.{csproj,sln,props}",
+            "onLanguage:fsharp",
+            "workspaceContains:**/*.{csproj,fsproj,sln,props}",
         ]);
     });
 

@@ -5,6 +5,7 @@ import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { advisoryVerdict, firstFixedVersion } from "../services/AdvisoryCatalog";
 import { latestReleasePreferred } from "../services/ReleaseAge";
+import { isMsBuildProject } from "../services/projectFiles";
 import { originForProject } from "../services/TransitiveOrigin";
 import { logger } from "../utils/logger";
 import {
@@ -154,7 +155,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
             this.versionFrom(lists?.patch, packageId),
             this.versionFrom(lists?.latest, packageId) || current.outdated?.latestVersion
         );
-        const projectName = document.fileName.toLowerCase().endsWith(".csproj")
+        const projectName = isMsBuildProject(document.fileName)
             ? this.scanner.getProjectName(document.uri)
             : undefined;
         const advisory = current.vulnerable?.advisoryUrl || advisoryUrlIn(diagnostic.message);
@@ -344,7 +345,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         document: vscode.TextDocument,
         packageId: string
     ): Promise<string | undefined> {
-        if (document.fileName.toLowerCase().endsWith(".csproj")) {
+        if (isMsBuildProject(document.fileName)) {
             return document.uri.fsPath;
         }
 
@@ -362,7 +363,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         document: vscode.TextDocument,
         packageId: string
     ): Promise<VersionLists | undefined> {
-        if (document.fileName.toLowerCase().endsWith(".csproj")) {
+        if (isMsBuildProject(document.fileName)) {
             return this.peekProject(document.uri.fsPath);
         }
 

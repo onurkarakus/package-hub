@@ -3,7 +3,7 @@
   "publisher": "onurkarakus",
   "displayName": "PackageHub",
   "description": "Manage your NuGet packages in the editor. See which ones need attention, then update them in a few clicks.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "license": "MIT",
   "engines": {
     "vscode": "^1.125.0"
@@ -16,6 +16,7 @@
     "nuget",
     "dotnet",
     "csharp",
+    "fsharp",
     "package",
     "vulnerability",
     "dependencies"
@@ -27,7 +28,8 @@
   },
   "activationEvents": [
     "onLanguage:csharp",
-    "workspaceContains:**/*.{csproj,sln,props}"
+    "onLanguage:fsharp",
+    "workspaceContains:**/*.{csproj,fsproj,sln,props}"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -238,32 +240,32 @@
       "editor/context": [
         {
           "command": "packageHub.updateLinePatch",
-          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@1"
         },
         {
           "command": "packageHub.updateLineLatest",
-          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@2"
         },
         {
           "command": "packageHub.openLineAdvisory",
-          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@3"
         },
         {
           "command": "packageHub.whyPackage",
-          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@4"
         },
         {
           "command": "packageHub.ignorePackage",
-          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@5"
         },
         {
           "command": "packageHub.removePackage",
-          "when": "resourceExtname == .csproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@6"
         }
       ]

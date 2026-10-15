@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import * as vscode from "vscode";
 import { PackageInfo } from "../models/PackageInfo";
+import { projectNameFromPath } from "./projectFiles";
 import { logger } from "../utils/logger";
 import { vsToolsEnvironment } from "./VsToolsPath";
 import { pbkdf2 } from "crypto";
@@ -9,6 +10,11 @@ import * as fs from "fs";
 import * as path from "path";
 
 const execAsync = promisify(exec);
+
+export interface PackageListResult {
+    packages: PackageInfo[];
+    projects: string[];
+}
 
 export class DotnetCli {
 
@@ -81,12 +87,20 @@ export class DotnetCli {
         includeTransitive: boolean = true,
         signal?: AbortSignal
     ): Promise<PackageInfo[]> {
+        return (await this.listVulnerableReport(targetPath, includeTransitive, signal)).packages;
+    }
+
+    async listVulnerableReport(
+        targetPath: string,
+        includeTransitive: boolean = true,
+        signal?: AbortSignal
+    ): Promise<PackageListResult> {
         const transitiveFlag = includeTransitive ? "--include-transitive" : "";
         const command = `dotnet list "${targetPath}" package --vulnerable ${transitiveFlag} --format json`;
-        const cwd = require("path").dirname(targetPath);
+        const cwd = path.dirname(targetPath);
         const output = await this.run(command, cwd, 60000, signal);
 
-        return this.parsePackageList(output, "vulnerable");
+        return this.readPackageList(output, "vulnerable");
     }
 
     /**
@@ -100,6 +114,22 @@ export class DotnetCli {
         signal?: AbortSignal,
         includePrerelease = false
     ): Promise<PackageInfo[]> {
+        return (await this.listOutdatedReport(
+            targetPath,
+            includeTransitive,
+            channel,
+            signal,
+            includePrerelease
+        )).packages;
+    }
+
+    async listOutdatedReport(
+        targetPath: string,
+        includeTransitive: boolean = true,
+        channel: "latest" | "patch" | "minor" = "latest",
+        signal?: AbortSignal,
+        includePrerelease = false
+    ): Promise<PackageListResult> {
         const flags = [
             "--outdated",
             includeTransitive ? "--include-transitive" : "",
@@ -115,7 +145,7 @@ export class DotnetCli {
 
         try {
             const output = await this.run(verbFirst, cwd, 60000, signal);
-            return this.parsePackageList(output, "outdated");
+            return this.readPackageList(output, "outdated");
         } catch (error: any) {
             const message = error.message || String(error);
             if (message.includes("`dotnet` was not found") || error.name === "AbortError" || signal?.aborted) {
@@ -124,7 +154,7 @@ export class DotnetCli {
 
             try {
                 const output = await this.run(nounFirst, cwd, 60000, signal);
-                return this.parsePackageList(output, "outdated");
+                return this.readPackageList(output, "outdated");
             } catch {
                 throw error;
             }
@@ -178,11 +208,27 @@ export class DotnetCli {
      * Lists deprecated packages.
      */
     async listDeprecated(targetPath: string, signal?: AbortSignal): Promise<PackageInfo[]> {
-        const cwd = require("path").dirname(targetPath);
+        return (await this.listDeprecatedReport(targetPath, signal)).packages;
+    }
+
+    async listDeprecatedReport(targetPath: string, signal?: AbortSignal): Promise<PackageListResult> {
+        const cwd = path.dirname(targetPath);
         const command = `dotnet list "${targetPath}" package --deprecated --format json`;
         const output = await this.run(command, cwd, 60000, signal);
 
-        return this.parsePackageList(output, "deprecated");
+        return this.readPackageList(output, "deprecated");
+    }
+
+    /**
+     * Lists every direct package, including the ones that need no attention.
+     * Command: dotnet list package --format json
+     */
+    async listInstalled(targetPath: string, signal?: AbortSignal): Promise<PackageListResult> {
+        const cwd = path.dirname(targetPath);
+        const command = `dotnet list "${targetPath}" package --format json`;
+        const output = await this.run(command, cwd, 60000, signal);
+
+        return this.readPackageList(output, "installed");
     }
 
     /**
@@ -235,25 +281,38 @@ export class DotnetCli {
    */
     parsePackageList(
         jsonOutput: string,
-        type: "vulnerable" | "outdated" | "deprecated"
+        type: "vulnerable" | "outdated" | "deprecated" | "installed"
     ): PackageInfo[] {
+        return this.readPackageList(jsonOutput, type).packages;
+    }
 
-        const severityOrder = ["Critical", "High", "Moderate", "Low"];
+    parseListedProjects(jsonOutput: string): string[] {
+        return this.readPackageList(jsonOutput, "installed").projects;
+    }
 
+    private readPackageList(
+        jsonOutput: string,
+        type: "vulnerable" | "outdated" | "deprecated" | "installed"
+    ): PackageListResult {
         if (!jsonOutput) {
-            return [];
+            return { packages: [], projects: [] };
         }
 
         try {
             const data = JSON.parse(jsonOutput);
             const packageMap = new Map<string, PackageInfo>();
+            const listedProjects: string[] = [];
 
             const projects = data.projects || [];
 
             for (const project of projects) {
                 const projectPath = project.path || project.projectPath || "";
-                const projectName =
-                    projectPath.split(/[\\/]/).pop()?.replace(".csproj", "") || "Unknown";
+                const fileName = String(projectPath).split(/[\\/]/).pop() || "";
+                const named = fileName ? projectNameFromPath(fileName) : "";
+                const projectName = named || "Unknown";
+                if (named && !listedProjects.some((item) => item.toLowerCase() === named.toLowerCase())) {
+                    listedProjects.push(named);
+                }
 
                 const frameworks = project.frameworks || [];
 
@@ -271,7 +330,7 @@ export class DotnetCli {
                         const version =
                             pkg.requestedVersion || pkg.resolvedVersion || pkg.version;
 
-                        if (!id || !version) {
+                        if (!id || !version || (type === "installed" && pkg.isTransitive)) {
                             continue;
                         }
 
@@ -348,10 +407,13 @@ export class DotnetCli {
                 }
             }
 
-            return Array.from(packageMap.values());
+            return {
+                packages: Array.from(packageMap.values()),
+                projects: listedProjects,
+            };
         } catch (error: any) {
             logger.error(`JSON parse error: ${error?.message || error}`);
-            return [];
+            return { packages: [], projects: [] };
         }
     }
 }

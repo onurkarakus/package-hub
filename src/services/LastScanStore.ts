@@ -9,6 +9,8 @@ interface LastScanRecord {
     vulnerable: PackageInfo[];
     outdated: PackageInfo[];
     deprecated: PackageInfo[];
+    installed?: PackageInfo[];
+    provenProjects?: string[];
     scannedAt: string;
     hasCpm: boolean;
 }
@@ -23,6 +25,8 @@ export async function saveLastScan(state: vscode.Memento): Promise<void> {
         vulnerable: ScanState.getAllVulnerable(),
         outdated: ScanState.getOutDated(),
         deprecated: ScanState.getDeprecated(),
+        installed: ScanState.getInstalled(),
+        provenProjects: ScanState.getProvenProjects(),
         scannedAt: scannedAt.toISOString(),
         hasCpm: ScanState.getCpm(),
     };
@@ -55,9 +59,32 @@ export function restoreLastScan(state: vscode.Memento): boolean {
         return false;
     }
 
-    ScanState.setResults(vulnerable, outdated, deprecated, scannedAt);
+    ScanState.setResults(
+        vulnerable,
+        outdated,
+        deprecated,
+        scannedAt,
+        readOptionalPackages(record.installed),
+        readProjectNames(record.provenProjects)
+    );
     ScanState.setCpm(record.hasCpm === true);
     return true;
+}
+
+function readOptionalPackages(value: unknown): PackageInfo[] {
+    if (value === undefined) {
+        return [];
+    }
+
+    return readPackages(value) || [];
+}
+
+function readProjectNames(value: unknown): string[] {
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+        return [];
+    }
+
+    return value;
 }
 
 function readPackages(value: unknown): PackageInfo[] | undefined {

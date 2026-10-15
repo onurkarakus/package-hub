@@ -1,43 +1,76 @@
 # PackageHub
 
-**Manage your NuGet packages inside the editor.** See which packages need attention, update them with less effort, and answer “why is this package here?” in one place.
+**Manage your NuGet packages inside the editor.** PackageHub reads your C# and F# projects, shows which packages need attention, and keeps the safe update one click away.
 
-You do not have to hunt through project files and yellow warnings. PackageHub lists your packages, puts the safe update first, and turns the job into a few clicks. Nothing changes until you choose **Yes, Update**.
+You do not have to hunt through project files and yellow warnings. Open the project, let the scan finish, and the package line tells you where things stand. Nothing changes until you choose **Yes, Update**.
 
-## What it helps with
+![Package lines after a scan. A vulnerable package shows a warning and the newer version, an outdated package shows a cross and the newer version, and a current package shows a check.](media/readme/package-lines.png)
 
-- **Your packages, in one list.** Vulnerable, outdated, and deprecated packages sit in the side bar.
-- **The yellow warning becomes readable.** Hover the line and you see why it was flagged, plus the version.
-- **Updates stay easy.** The first suggestion is the highest patch in the same major. A newer major is a separate choice.
-- **Bulk work on one screen.** Apply a patch or minor update to many packages from the dashboard.
-- **You can see the path.** A separate window shows which project brought the package in.
-- **You stay in control.** Project files are not written until you confirm. Usage data never leaves this machine.
+## What you can do
 
-## Install
+- **See the status on the line.** After a scan, a package line shows one mark. A vulnerable package shows a warning, an outdated package shows a cross and the newer version, and a deprecated package shows its own mark. A package the scan found current shows a check.
+- **Keep the yellow warning.** The NU1901–NU1904 underline, the lightbulb, and the text above the line stay. The mark does not replace them.
+- **Put the safe update first.** The first suggestion is the highest patch in the same major. A newer major is a separate choice.
+- **Work from one list.** Vulnerable, outdated, and deprecated packages sit in the side bar and in the health dashboard.
+- **See the path.** A separate window shows which project brought the package in.
+- **Stay in control.** Project files are not written until you confirm. Usage data never leaves this machine.
 
-1. Open the Extensions view in VS Code (`Ctrl+Shift+X` / `Cmd+Shift+X`).
-2. Search for PackageHub.
-3. Click Install.
+## Languages and files
 
-After install, the **PackageHub** icon sits on the Activity Bar. Open the Command Palette with `Ctrl+Shift+P` / `Cmd+Shift+P`.
+<p>
+  <img src="media/readme/csharp.png" alt="C#" width="48" height="48" />
+  &nbsp;&nbsp;<strong>C#</strong>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="media/readme/fsharp.png" alt="F#" width="48" height="48" />
+  &nbsp;&nbsp;<strong>F#</strong>
+</p>
+
+PackageHub reads .NET projects:
+
+- C# project files (`.csproj`)
+- F# project files (`.fsproj`)
+- Visual Studio solutions (`.sln`)
+- Central package versions in `Directory.Packages.props`
+- `GlobalPackageReference` when the package and its version are on the same line
+
+`.slnx` files are skipped.
+
+## The mark on the package line
+
+The mark appears after a scan, at the end of the package line.
+
+- **Warning.** The package is vulnerable. When a newer version exists, it is written next to the warning.
+- **Cross.** The package is outdated. The version next to the cross is the latest version. The same-major patch stays in the text above the line.
+- **Deprecated.** The package is deprecated. A newer version is shown when one exists.
+- **Check.** The scan read that project and the package is not vulnerable, outdated, or deprecated.
+
+A check is drawn only when the installed, vulnerable, outdated, and deprecated lists all include that project. A project the scan could not read stays unmarked. If one of those lists fails, that project gets no check. The mark is not clickable, and moving the cursor over it does not run `dotnet`.
+
+The line above a vulnerable package still offers the highest patch in one click.
 
 ## Update a package
 
-1. Open a folder that contains a `.csproj`, `.sln`, or `.props` file. PackageHub starts on its own.
-2. Wait for the startup scan. You can also run `PackageHub: Scan Workspace`. Saving a `csproj` or `props` file starts a scan too.
+1. Open a folder that contains a `.csproj`, `.fsproj`, `.sln`, or `.props` file. PackageHub starts on its own.
+2. Wait for the startup scan, or run `PackageHub: Scan Workspace`. Saving a `.csproj`, `.fsproj`, or `.props` file starts a scan too.
 3. Hover the yellow line. It shows the version and whether the advisory is still open. Opening that hover does not run `dotnet`.
-4. Open the lightbulb. The first item is **Update to highest patch**, the highest patch in the same major. **Update to latest** appears under it when a newer version exists. **Open Advisory** appears when a link exists. The first version that closes the advisory can appear further down. It is not the default.
+4. Open the lightbulb. The first item is **Update to highest patch**. **Update to latest** appears under it when a newer version exists. **Open Advisory** appears when a link exists. The first version that closes the advisory can appear further down. It is not the default.
 5. Confirm the choice. The button says **Yes, Update**. PackageHub then updates the package, restores, and scans again.
 
-The text above the line applies that same patch in one click.
+![Quick Fix on a vulnerable package. The highest patch is the first choice. Latest and the first fixed version are listed under it.](media/readme/quick-fix.png)
 
 With Central Package Management, the version is written to `Directory.Packages.props`. You do not edit the project file by hand.
 
 ## Your package list
 
-The **PackageHub** icon on the Activity Bar opens your packages. `PackageHub: Show Health Dashboard` shows how many need attention and offers the bulk updates.
+The **PackageHub** icon on the Activity Bar opens your packages.
+
+![Package Health after a scan. Vulnerable and outdated packages are listed, with the project that contains them.](media/readme/package-list.png)
+
+`PackageHub: Show Health Dashboard` shows how many need attention and offers the bulk updates.
 
 The bulk buttons are **Highest patch** and **Highest minor**. **Update to latest** on a row updates only that package.
+
+The status bar counts vulnerable, outdated, and deprecated packages.
 
 ## Why is this package here?
 
@@ -72,15 +105,15 @@ Choose **Why is this here?** from the hover or from the line’s right-click men
 | `packageHub.dashboardViewMode` | Dashboard layout: `list`, `byProject`, or `byPackage` | `list` |
 | `packageHub.ignoredPackages` | Package ids hidden from the lists | `[]` |
 
-## Privacy
-
-Scanning, updating, and the path lookup stay on this machine. PackageHub does not collect or send usage data.
-
 ## Requirements
 
 - VS Code 1.125.0 or newer
 - `dotnet` on your PATH
 - .NET SDK 8.0.400 or newer for Why
+
+## Privacy
+
+Scanning, updating, and the path lookup stay on this machine. PackageHub does not collect or send usage data.
 
 ## Feedback
 

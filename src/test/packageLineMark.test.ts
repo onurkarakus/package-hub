@@ -139,6 +139,53 @@ suite("Package line mark", () => {
         assert.strictEqual(mark, undefined);
     });
 
+    test("a current package shows a check and no version", () => {
+        const mark = packageLineMark("1.2.3", {
+            current: { version: "1.2.3" },
+        });
+
+        assert.deepStrictEqual(mark, {
+            kind: "current",
+            text: "\u2713",
+            hover: "Current.",
+        });
+    });
+
+    test("a problem mark wins over the current check", () => {
+        const mark = packageLineMark("1.0.0", {
+            outdated: { version: "1.0.0", latestVersion: "1.1.0" },
+            current: { version: "1.0.0" },
+        });
+
+        assert.strictEqual(mark?.kind, "outdated");
+    });
+
+    test("a version that does not match the inventory draws no check", () => {
+        const mark = packageLineMark("9.9.9", {
+            current: { version: "1.2.3" },
+        });
+
+        assert.strictEqual(mark, undefined);
+    });
+
+    test("a line with no version still shows the current check", () => {
+        const mark = packageLineMark(undefined, {
+            current: { version: "1.2.3" },
+        });
+
+        assert.strictEqual(mark?.kind, "current");
+        assert.strictEqual(mark?.text, "\u2713");
+    });
+
+    test("an outdated record that is not newer does not become a check", () => {
+        const mark = packageLineMark("0.12.4", {
+            outdated: { version: "0.12.4", latestVersion: "0.12.4" },
+            current: { version: "0.12.4" },
+        });
+
+        assert.strictEqual(mark, undefined);
+    });
+
     test("a props line can use a package recorded on any project", () => {
         const facts = packageLineFacts(
             { version: "0.11.3", latestVersion: "0.12.4", projects: ["Api"] },

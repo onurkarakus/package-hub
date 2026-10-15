@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { advisoryLabel, advisoryVerdict, firstFixedVersion } from "../services/AdvisoryCatalog";
 import { latestReleasePreferred } from "../services/ReleaseAge";
+import { isMsBuildProject } from "../services/projectFiles";
 import { ScanState } from "../services/ScanState";
 import { WarningExplainer } from "../services/WarningExplainer";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
@@ -223,7 +224,7 @@ export class PackageHoverProvider implements vscode.HoverProvider {
     }
 
     private projectName(document: vscode.TextDocument): string | undefined {
-        return document.fileName.toLowerCase().endsWith(".csproj")
+        return isMsBuildProject(document.fileName)
             ? this.scanner.getProjectName(document.uri)
             : undefined;
     }

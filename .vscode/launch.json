@@ -31,6 +31,19 @@
 			"preLaunchTask": "npm: watch:esbuild"
 		},
 		{
+			"name": "Run Extension (fsharp sample)",
+			"type": "extensionHost",
+			"request": "launch",
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}",
+				"${workspaceFolder}/samples/fsharp-audit"
+			],
+			"outFiles": [
+				"${workspaceFolder}/dist/**/*.js"
+			],
+			"preLaunchTask": "npm: watch:esbuild"
+		},
+		{
 			"name": "Run Extension (stable)",
 			"type": "extensionHost",
 			"request": "launch",

@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { isMsBuildProject } from "../services/projectFiles";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { readPackageRef } from "../utils/nugetAudit";
@@ -79,7 +80,7 @@ export class PackageCodeLensProvider implements vscode.CodeLensProvider, vscode.
         ready: boolean
     ): vscode.CodeLens | undefined {
         const range = document.lineAt(line).range;
-        const projectName = document.fileName.toLowerCase().endsWith(".csproj")
+        const projectName = isMsBuildProject(document.fileName)
             ? this.scanner.getProjectName(document.uri)
             : undefined;
 

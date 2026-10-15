@@ -50,7 +50,8 @@ export function readPackageRef(line: string): {
     version?: string;
     kind: "reference" | "version";
 } | undefined {
-    if (!/PackageReference|PackageVersion/i.test(line)) {
+    const tag = /<(GlobalPackageReference|PackageReference|PackageVersion)\b/i.exec(line);
+    if (!tag) {
         return undefined;
     }
 
@@ -64,7 +65,7 @@ export function readPackageRef(line: string): {
     return {
         id: include[1],
         version: version?.[1],
-        kind: /PackageVersion/i.test(line) ? "version" : "reference",
+        kind: tag[1].toLowerCase() === "packageversion" ? "version" : "reference",
     };
 }
 

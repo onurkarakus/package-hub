@@ -18,6 +18,8 @@ import { buildHealthReport } from "./services/HealthReport";
 import { buildVulnerabilityReport } from "./services/VulnerabilityReport";
 import { chooseQuickFixVersions, isSafeChannelTarget, readPackageRef } from "./utils/nugetAudit";
 import { isProjectLoadFailure, projectLoadSummary } from "./services/ProjectLoadFailure";
+import { isMsBuildProject, projectNameFromPath } from "./services/projectFiles";
+import { provenProjectNames } from "./services/provenProjects";
 import {
 	classicSolutionPaths,
 	readSolutionProjects,
@@ -174,6 +176,8 @@ interface TargetScan {
 	outdated: any[];
 	deprecated: any[];
 	patch: any[];
+	installed: any[];
+	provenProjects: string[];
 	loadError?: string;
 }
 
@@ -184,10 +188,11 @@ async function scanOneTarget(
 	signal: AbortSignal
 ): Promise<TargetScan> {
 	const settled = await Promise.allSettled([
-		cli.listVulnerable(targetPath, true, signal),
-		cli.listOutdated(targetPath, false, "latest", signal, ScanState.includePrerelease()),
-		cli.listDeprecated(targetPath, signal),
-		cli.listOutdated(targetPath, false, "patch", signal, ScanState.includePrerelease()),
+		cli.listVulnerableReport(targetPath, true, signal),
+		cli.listOutdatedReport(targetPath, false, "latest", signal, ScanState.includePrerelease()),
+		cli.listDeprecatedReport(targetPath, signal),
+		cli.listOutdatedReport(targetPath, false, "patch", signal, ScanState.includePrerelease()),
+		cli.listInstalled(targetPath, signal),
 	]);
 
 	if (settled.some((result) =>
@@ -197,7 +202,7 @@ async function scanOneTarget(
 		throw new Error("`dotnet` was not found. Is the .NET SDK installed?");
 	}
 
-	const names = ["vulnerable", "outdated", "deprecated", "patch"] as const;
+	const names = ["vulnerable", "outdated", "deprecated", "patch", "installed"] as const;
 	const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
 	if (failures.length === names.length) {
 		const message = String(failures[0].reason?.message || failures[0].reason);
@@ -207,12 +212,14 @@ async function scanOneTarget(
 				outdated: [],
 				deprecated: [],
 				patch: [],
+				installed: [],
+				provenProjects: [],
 				loadError: message,
 			};
 		}
 	}
 
-	const lists = names.map((name, index) => {
+	const reports = names.map((name, index) => {
 		const result = settled[index];
 		if (result.status === "fulfilled") {
 			return result.value;
@@ -221,14 +228,26 @@ async function scanOneTarget(
 		if (!signal.aborted) {
 			logger.error(`[${label}] could not read ${name}: ${result.reason?.message || result.reason}`);
 		}
-		return [];
+		return { packages: [] as any[], projects: [] as string[] };
 	});
 
+	const proofReady = [0, 1, 2, 4].every((index) => settled[index].status === "fulfilled");
+	const provenProjects = proofReady
+		? provenProjectNames([
+			reports[4].projects,
+			reports[0].projects,
+			reports[1].projects,
+			reports[2].projects,
+		])
+		: [];
+
 	return {
-		vulnerable: lists[0],
-		outdated: lists[1],
-		deprecated: lists[2],
-		patch: lists[3],
+		vulnerable: reports[0].packages,
+		outdated: reports[1].packages,
+		deprecated: reports[2].packages,
+		patch: reports[3].packages,
+		installed: reports[4].packages,
+		provenProjects,
 	};
 }
 
@@ -294,7 +313,7 @@ async function runPool(
 async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	const projects = await workspaceScanner.findProjects();
 	if (projects.length === 0) {
-		vscode.window.showErrorMessage("No .csproj file was found in the workspace.");
+		vscode.window.showErrorMessage("No .csproj or .fsproj file was found in the workspace.");
 		return;
 	}
 
@@ -461,7 +480,7 @@ export function activate(context: vscode.ExtensionContext) {
 		codeLensProvider,
 		lineDecorations,
 		vscode.languages.registerCodeLensProvider(
-			{ scheme: "file", pattern: "**/*.{csproj,props}" },
+			{ scheme: "file", pattern: "**/*.{csproj,fsproj,props}" },
 			codeLensProvider
 		)
 	);
@@ -518,7 +537,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Hover is the explanation. Update links read the lightbulb cache and do not start a new dotnet call.
 	const hoverProvider = vscode.languages.registerHoverProvider(
 		[
-			{ language: "xml", scheme: "file", pattern: "**/*.{csproj,props}" }
+			{ language: "xml", scheme: "file", pattern: "**/*.{csproj,fsproj,props}" }
 		],
 		new PackageHoverProvider(codeActionProvider, workspaceScanner)
 	);
@@ -526,7 +545,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		auditDiagnostics,
 		vscode.languages.registerCodeActionsProvider(
-			{ scheme: "file", pattern: "**/*.{csproj,props}" },
+			{ scheme: "file", pattern: "**/*.{csproj,fsproj,props}" },
 			codeActionProvider,
 			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 		)
@@ -616,7 +635,7 @@ export function activate(context: vscode.ExtensionContext) {
 			return undefined;
 		}
 
-		const projectName = editor.document.fileName.toLowerCase().endsWith(".csproj")
+		const projectName = isMsBuildProject(editor.document.fileName)
 			? workspaceScanner.getProjectName(editor.document.uri)
 			: undefined;
 		return { ...ref, projectName, document: editor.document };
@@ -897,11 +916,13 @@ export function activate(context: vscode.ExtensionContext) {
 						let deprecated: any[] = [];
 						let patch: any[] = [];
 						const skipped: string[] = [];
+						const provenNames: string[] = [];
 						const buckets = {
 							vulnerable: [] as any[],
 							outdated: [] as any[],
 							deprecated: [] as any[],
 							patch: [] as any[],
+							installed: [] as any[],
 						};
 
 						const remember = (lists: TargetScan) => {
@@ -909,12 +930,18 @@ export function activate(context: vscode.ExtensionContext) {
 							buckets.outdated.push(...lists.outdated);
 							buckets.deprecated.push(...lists.deprecated);
 							buckets.patch.push(...lists.patch);
+							buckets.installed.push(...lists.installed);
+							for (const name of lists.provenProjects) {
+								if (!provenNames.some((item) => item.toLowerCase() === name.toLowerCase())) {
+									provenNames.push(name);
+								}
+							}
 						};
 
 						const scanProjectPaths = async (projectPaths: string[]) => {
 							await runPool(projectPaths.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
 								const projectPath = projectPaths[index];
-								const label = path.basename(projectPath, ".csproj");
+								const label = projectNameFromPath(projectPath);
 								progress.report({ message: `${index + 1}/${projectPaths.length} ${label}` });
 								try {
 									const lists = await scanOneTarget(
@@ -991,7 +1018,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 							if (projects.length === 0) {
 								vscode.window.showErrorMessage(
-									"No .sln or .csproj file was found in the workspace."
+									"No .sln, .csproj, or .fsproj file was found in the workspace."
 								);
 								return;
 							}
@@ -1005,7 +1032,7 @@ export function activate(context: vscode.ExtensionContext) {
 						patch = mergeById(buckets.patch);
 
 						if (skipped.length > 0) {
-							const names = skipped.slice(0, 3).map((item) => path.basename(item, ".csproj"));
+							const names = skipped.slice(0, 3).map((item) => projectNameFromPath(item));
 							const extra = skipped.length > 3 ? ` and ${skipped.length - 3} more` : "";
 							vscode.window.showWarningMessage(
 								`PackageHub skipped ${skipped.length} project${skipped.length === 1 ? "" : "s"} that dotnet could not load: ${names.join(", ")}${extra}. The other projects were scanned.`
@@ -1027,6 +1054,8 @@ export function activate(context: vscode.ExtensionContext) {
 						vulnerable = vulnerable.filter((p) => !ignored.includes(p.id.toLowerCase()));
 						outdated = outdated.filter((p) => !ignored.includes(p.id.toLowerCase()));
 						deprecated = deprecated.filter((p) => !ignored.includes(p.id.toLowerCase()));
+						const installed = mergeById(buckets.installed)
+							.filter((pkg) => !ignored.includes(pkg.id.toLowerCase()));
 
 						try {
 							const projectFiles = await workspaceScanner.findProjects();
@@ -1041,7 +1070,14 @@ export function activate(context: vscode.ExtensionContext) {
 							logger.error(`Could not read the transitive parent: ${originError.message}`);
 						}
 
-						ScanState.setResults(vulnerable, outdated, deprecated);
+						ScanState.setResults(
+							vulnerable,
+							outdated,
+							deprecated,
+							undefined,
+							installed,
+							provenNames
+						);
 
 						try {
 							await loadAdvisoryCatalog();
@@ -1278,7 +1314,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const fromItem = requestedId.length > 0;
 			let packageId = requestedId;
 			const editor = vscode.window.activeTextEditor;
-			const editorIsProject = !!editor && editor.document.fileName.toLowerCase().endsWith(".csproj");
+			const editorIsProject = !!editor && isMsBuildProject(editor.document.fileName);
 			if (!packageId && editor) {
 				packageId = readPackageRef(
 					editor.document.lineAt(editor.selection.active.line).text
@@ -1522,7 +1558,7 @@ export function activate(context: vscode.ExtensionContext) {
 						const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
 						if (classicSolutionPaths(found).length === 0 && projects.length === 0) {
 							vscode.window.showErrorMessage(
-								"No .sln or .csproj was found to restore."
+								"No .sln, .csproj, or .fsproj was found to restore."
 							);
 							return;
 						}
@@ -1597,12 +1633,12 @@ export function activate(context: vscode.ExtensionContext) {
 					return;
 				}
 				projectPath = match.fsPath;
-			} else if (editor?.document.uri.fsPath.toLowerCase().endsWith(".csproj")) {
+			} else if (editor && isMsBuildProject(editor.document.uri.fsPath)) {
 				projectPath = editor.document.uri.fsPath;
 			} else if (projects.length === 1) {
 				projectPath = projects[0].fsPath;
 			} else if (projects.length === 0) {
-				vscode.window.showErrorMessage("No .csproj file was found in the workspace.");
+				vscode.window.showErrorMessage("No .csproj or .fsproj file was found in the workspace.");
 				return;
 			} else {
 				const picked = await vscode.window.showQuickPick(
@@ -1620,7 +1656,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!projectPath) {
-				vscode.window.showErrorMessage("No .csproj file was found in the workspace.");
+				vscode.window.showErrorMessage("No .csproj or .fsproj file was found in the workspace.");
 				return;
 			}
 

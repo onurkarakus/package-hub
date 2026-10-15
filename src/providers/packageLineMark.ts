@@ -10,7 +10,7 @@ export interface PackageLineFacts {
 }
 
 export interface PackageLineMark {
-    kind: "vulnerable" | "outdated" | "deprecated";
+    kind: "vulnerable" | "outdated" | "deprecated" | "current";
     text: string;
     hover: string;
 }
@@ -18,6 +18,7 @@ export interface PackageLineMark {
 const WARNING = "\u26A0";
 const CROSS = "\u2715";
 const STOPPED = "\u2298";
+const CHECK = "\u2713";
 
 export function packageLineFacts(
     pkg: PackageLineFacts | undefined,
@@ -61,12 +62,26 @@ function versionForProject(
     return undefined;
 }
 
+export function packageLineHasProblem(
+    lineVersion: string | undefined,
+    facts: {
+        vulnerable?: PackageLineFacts;
+        outdated?: PackageLineFacts;
+        deprecated?: PackageLineFacts;
+    }
+): boolean {
+    return [facts.vulnerable, facts.outdated, facts.deprecated].some(
+        (item) => !!item && versionApplies(lineVersion, item.version)
+    );
+}
+
 export function packageLineMark(
     lineVersion: string | undefined,
     facts: {
         vulnerable?: PackageLineFacts;
         outdated?: PackageLineFacts;
         deprecated?: PackageLineFacts;
+        current?: PackageLineFacts;
     }
 ): PackageLineMark | undefined {
     const vulnerable = facts.vulnerable && versionApplies(lineVersion, facts.vulnerable.version)
@@ -107,7 +122,7 @@ export function packageLineMark(
     }
 
     if (!outdated) {
-        return undefined;
+        return currentMark(lineVersion, facts.current);
     }
 
     const current = lineVersion || outdated.version;
@@ -120,6 +135,21 @@ export function packageLineMark(
         kind: "outdated",
         text: withVersion(CROSS, newer),
         hover: newer ? `Outdated. Newer version ${newer}.` : "Outdated.",
+    };
+}
+
+function currentMark(
+    lineVersion: string | undefined,
+    current: PackageLineFacts | undefined
+): PackageLineMark | undefined {
+    if (!current || !versionApplies(lineVersion, current.version)) {
+        return undefined;
+    }
+
+    return {
+        kind: "current",
+        text: CHECK,
+        hover: "Current.",
     };
 }
 

@@ -1,5 +1,6 @@
 import * as fs from "fs/promises";
 import * as path from "path";
+import { isMsBuildProject } from "./projectFiles";
 
 const projectLine =
     /^Project\("\{[^"]+\}"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"\s*,\s*"\{[^"]+\}"\s*$/;
@@ -29,7 +30,7 @@ export function csprojPathsInSolution(solutionText: string, solutionPath: string
         }
 
         const relative = match[1].replace(/\\/g, "/");
-        if (!relative.toLowerCase().endsWith(".csproj")) {
+        if (!isMsBuildProject(relative)) {
             continue;
         }
 

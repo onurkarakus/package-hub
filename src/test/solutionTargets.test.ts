@@ -46,6 +46,20 @@ suite("Solution targets", () => {
         ]);
     });
 
+    test("a solution lists an fsproj file", () => {
+        const library = path.join(root, "Library", "Library.fsproj");
+        const text = [
+            'Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{11111111-1111-1111-1111-111111111111}"',
+            "EndProject",
+            'Project("{F2A71F9B-5D33-11D2-91E0-00C04F79EFBC}") = "Library", "Library\\Library.fsproj", "{22222222-2222-2222-2222-222222222222}"',
+            "EndProject",
+        ].join("\n");
+
+        assert.deepStrictEqual(csprojPathsInSolution(text, path.join(root, "Included.sln")), [
+            library,
+        ]);
+    });
+
     test("restore uses the solution that contains the project", () => {
         const targets = restoreTargetsForProjects(
             [

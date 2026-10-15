@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as vscode from "vscode";
 import { PackageInfo, TransitiveOrigin } from "../models/PackageInfo";
+import { isMsBuildProject } from "../services/projectFiles";
 import { originForProject } from "../services/TransitiveOrigin";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
@@ -36,7 +37,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
                 this.collection.set(uri, diagnostics);
             }
 
-            if (uri.fsPath.toLowerCase().endsWith(".csproj") && diagnostics.length > 0) {
+            if (isMsBuildProject(uri.fsPath) && diagnostics.length > 0) {
                 affected.add(uri.fsPath);
             }
         }
@@ -86,7 +87,10 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
             return value === needle
                 || value.endsWith(`/${needle}.csproj`)
                 || value.endsWith(`\\${needle}.csproj`)
-                || value.endsWith(`${needle}.csproj`);
+                || value.endsWith(`${needle}.csproj`)
+                || value.endsWith(`/${needle}.fsproj`)
+                || value.endsWith(`\\${needle}.fsproj`)
+                || value.endsWith(`${needle}.fsproj`);
         });
 
         return index >= 0 ? index : 0;
@@ -107,7 +111,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         const lines = text.split(/\r?\n/);
         const diagnostics: vscode.Diagnostic[] = [];
         const seen = new Set<string>();
-        const isProject = uri.fsPath.toLowerCase().endsWith(".csproj");
+        const isProject = isMsBuildProject(uri.fsPath);
         const projectName = isProject ? this.scanner.getProjectName(uri) : undefined;
 
         lines.forEach((line, index) => {

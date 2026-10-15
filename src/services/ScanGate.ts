@@ -1,3 +1,5 @@
+import { isPackageDocumentPath } from "./projectFiles";
+
 export class ScanGate {
     private running = false;
     private pending = false;
@@ -28,6 +30,5 @@ export class ScanGate {
 }
 
 export function isPackageProjectFile(filePath: string): boolean {
-    const lower = filePath.toLowerCase();
-    return lower.endsWith(".csproj") || lower.endsWith(".props");
+    return isPackageDocumentPath(filePath);
 }
