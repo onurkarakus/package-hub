@@ -9,17 +9,20 @@
     "vscode": "^1.125.0"
   },
   "categories": [
-    "Linters",
-    "Other"
+    "Programming Languages",
+    "Linters"
   ],
   "keywords": [
     "nuget",
     "dotnet",
     "csharp",
     "fsharp",
-    "package",
+    "csproj",
+    "fsproj",
     "vulnerability",
-    "dependencies"
+    "dependencies",
+    "security",
+    "audit"
   ],
   "icon": "media/packagehub-logo.png",
   "galleryBanner": {
