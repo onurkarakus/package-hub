@@ -1,12 +1,16 @@
-import { compareNuGetVersions, sameNuGetVersion } from "../utils/nugetAudit";
+import { compareNuGetVersions, isComparableVersion, sameNuGetVersion } from "../utils/nugetAudit";
 
 export interface PackageLineFacts {
+    /** Resolved version for the project (display, comparisons). */
     version: string;
+    /** Version or range written in the project, when the scan saw it. */
+    requestedVersion?: string;
     latestVersion?: string;
     highestPatch?: string;
     severity?: string;
     projects?: string[];
     versionByProject?: Record<string, string>;
+    requestedVersionByProject?: Record<string, string>;
 }
 
 export interface PackageLineMark {
@@ -38,6 +42,7 @@ export function packageLineFacts(
 
     return {
         version: versionForProject(pkg.versionByProject, projectName) || pkg.version,
+        requestedVersion: versionForProject(pkg.requestedVersionByProject, projectName) || pkg.requestedVersion,
         latestVersion: pkg.latestVersion,
         highestPatch: pkg.highestPatch,
         severity: pkg.severity,
@@ -71,7 +76,7 @@ export function packageLineHasProblem(
     }
 ): boolean {
     return [facts.vulnerable, facts.outdated, facts.deprecated].some(
-        (item) => !!item && versionApplies(lineVersion, item.version)
+        (item) => !!item && versionApplies(lineVersion, item)
     );
 }
 
@@ -84,18 +89,18 @@ export function packageLineMark(
         current?: PackageLineFacts;
     }
 ): PackageLineMark | undefined {
-    const vulnerable = facts.vulnerable && versionApplies(lineVersion, facts.vulnerable.version)
+    const vulnerable = facts.vulnerable && versionApplies(lineVersion, facts.vulnerable)
         ? facts.vulnerable
         : undefined;
-    const outdated = facts.outdated && versionApplies(lineVersion, facts.outdated.version)
+    const outdated = facts.outdated && versionApplies(lineVersion, facts.outdated)
         ? facts.outdated
         : undefined;
-    const deprecated = facts.deprecated && versionApplies(lineVersion, facts.deprecated.version)
+    const deprecated = facts.deprecated && versionApplies(lineVersion, facts.deprecated)
         ? facts.deprecated
         : undefined;
 
     if (vulnerable) {
-        const newer = newerVersion(lineVersion || vulnerable.version, [
+        const newer = newerVersion(comparableVersion(lineVersion, vulnerable.version), [
             outdated?.latestVersion,
             vulnerable.latestVersion,
             vulnerable.highestPatch,
@@ -109,7 +114,7 @@ export function packageLineMark(
     }
 
     if (deprecated) {
-        const newer = newerVersion(lineVersion || deprecated.version, [
+        const newer = newerVersion(comparableVersion(lineVersion, deprecated.version), [
             outdated?.latestVersion,
             deprecated.latestVersion,
             outdated?.highestPatch,
@@ -125,7 +130,7 @@ export function packageLineMark(
         return currentMark(lineVersion, facts.current);
     }
 
-    const current = lineVersion || outdated.version;
+    const current = comparableVersion(lineVersion, outdated.version);
     const newer = newerVersion(current, [outdated.latestVersion, outdated.highestPatch]);
     if ((outdated.latestVersion || outdated.highestPatch) && !newer) {
         return undefined;
@@ -142,7 +147,7 @@ function currentMark(
     lineVersion: string | undefined,
     current: PackageLineFacts | undefined
 ): PackageLineMark | undefined {
-    if (!current || !versionApplies(lineVersion, current.version)) {
+    if (!current || !versionApplies(lineVersion, current)) {
         return undefined;
     }
 
@@ -153,12 +158,49 @@ function currentMark(
     };
 }
 
-function versionApplies(lineVersion: string | undefined, scanned: string | undefined): boolean {
-    if (!lineVersion || !scanned) {
+/**
+ * True when the scanned facts describe the version written on the line.
+ * The line holds the requested version. It may be a range, a floating version
+ * or a property, which cannot be compared: then the requested text the scan
+ * saw must match, or, when the scan saw none, the facts apply.
+ */
+export function versionApplies(lineVersion: string | undefined, facts: Pick<PackageLineFacts, "version" | "requestedVersion">): boolean {
+    if (!lineVersion) {
         return true;
     }
 
-    return sameNuGetVersion(lineVersion, scanned);
+    const requested = facts.requestedVersion;
+    if (requested && requested.trim().toLowerCase() === lineVersion.trim().toLowerCase()) {
+        return true;
+    }
+
+    if (!isComparableVersion(lineVersion)) {
+        return !requested || /\$\(/.test(lineVersion);
+    }
+
+    if (requested && isComparableVersion(requested)) {
+        return sameNuGetVersion(lineVersion, requested);
+    }
+
+    if (!facts.version) {
+        return true;
+    }
+
+    return sameNuGetVersion(lineVersion, facts.version);
+}
+
+/**
+ * The resolved version the scan saw is what is installed. The line text is
+ * only a fallback, and only when it is one exact version.
+ */
+function comparableVersion(lineVersion: string | undefined, scanned: string | undefined): string | undefined {
+    if (scanned && isComparableVersion(scanned)) {
+        return scanned;
+    }
+    if (lineVersion && isComparableVersion(lineVersion)) {
+        return lineVersion;
+    }
+    return undefined;
 }
 
 function newerVersion(current: string | undefined, candidates: (string | undefined)[]): string | undefined {

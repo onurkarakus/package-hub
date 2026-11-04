@@ -1,18 +1,51 @@
 import * as vscode from "vscode";
 import { advisoryLabel, advisoryVerdict, firstFixedVersion } from "../services/AdvisoryCatalog";
-import { latestReleasePreferred } from "../services/ReleaseAge";
+import { releaseAgeNotice } from "../services/ReleaseAge";
 import { isMsBuildProject } from "../services/projectFiles";
 import { ScanState } from "../services/ScanState";
 import { WarningExplainer } from "../services/WarningExplainer";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
-import { readPackageRef, sameNuGetVersion } from "../utils/nugetAudit";
+import { packageRefAtLine, sameNuGetVersion } from "../utils/nugetAudit";
 import { PackageCodeActionProvider } from "./PackageCodeActionProvider";
 
 function escapeHtml(value: string): string {
     return value
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+/**
+ * Escapes text for Markdown and HTML, so a package id or version can not add
+ * links, emphasis or tags.
+ */
+export function escapeMarkdown(value: string): string {
+    return escapeHtml(value).replace(/[\\`*_{}\[\]()#+\-.!|~]/g, "\\$&");
+}
+
+/**
+ * The only commands a hover link may run.
+ */
+export const HOVER_COMMANDS = [
+    "packageHub.updateVulnerable",
+    "packageHub.quickFixBlocked",
+    "packageHub.openAdvisory",
+    "packageHub.whyPackage",
+    "packageHub.ignorePackage",
+    "packageHub.removePackage",
+] as const;
+
+export function safeAdvisoryUrl(url: string | undefined): string | undefined {
+    if (!url) {
+        return undefined;
+    }
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === "https:" && !/\s/.test(url) ? parsed.toString() : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 export function hoverActionChip(
@@ -54,20 +87,23 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         position: vscode.Position,
         _token: vscode.CancellationToken
     ): Promise<vscode.Hover | null> {
-        const ref = readPackageRef(document.lineAt(position.line).text);
+        const ref = packageRefAtLine(document.getText(), position.line);
         if (!ref) {
             return null;
         }
 
         const packageId = ref.id;
         const found = ScanState.findPackage(packageId);
+        const projectName = this.projectName(document);
         const usesCentral = ref.kind === "version" || !ref.version;
         const centralVersion = ref.kind === "version"
             ? ref.version
             : ScanState.getCentralVersion(packageId);
-        const currentVersion = usesCentral
-            ? centralVersion
-            : (ref.version || found.vulnerable?.version || found.outdated?.version);
+        const resolved = ScanState.resolvedVersionIn(packageId, projectName);
+        const currentVersion = resolved
+            || (usesCentral
+                ? centralVersion
+                : (ref.version || found.vulnerable?.version || found.outdated?.version));
         const explanation = WarningExplainer.explain(
             packageId,
             currentVersion || "unknown",
@@ -77,13 +113,13 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         );
 
         const md = new vscode.MarkdownString();
-        md.isTrusted = true;
+        md.isTrusted = { enabledCommands: [...HOVER_COMMANDS] };
         md.supportHtml = true;
         md.supportThemeIcons = true;
 
         const lines: string[] = [];
         const versionText = `\`${escapeHtml(currentVersion || "unknown")}\`${usesCentral ? " · CPM" : ""}`;
-        const header = [`**${escapeHtml(explanation.title)}**`];
+        const header = [`**${escapeMarkdown(explanation.title)}**`];
         if (explanation.severity) {
             header.push(escapeHtml(explanation.severity));
         }
@@ -112,8 +148,8 @@ export class PackageHoverProvider implements vscode.HoverProvider {
                 explanation.advisoryUrl
             );
         }
-        const projectName = this.projectName(document);
         const peek = await this.versions.peekUpdateTargets(document, packageId, currentVersion);
+        const advisoryUrl = safeAdvisoryUrl(explanation.advisoryUrl);
         const fixedLink = explanation.isVulnerable
             ? this.firstFixedLink(
                 packageId,
@@ -124,13 +160,13 @@ export class PackageHoverProvider implements vscode.HoverProvider {
             )
             : undefined;
         const updates = [
-            this.versionLink("patch", packageId, projectName, peek, explanation.advisoryUrl),
-            this.versionLink("latest", packageId, projectName, peek, explanation.advisoryUrl),
+            this.versionLink("patch", packageId, projectName, peek),
+            this.versionLink("latest", packageId, projectName, peek),
             ...(fixedLink ? [fixedLink] : []),
         ];
         const others = [
-            explanation.advisoryUrl
-                ? hoverActionChip("link-external", "Open Advisory", explanation.advisoryUrl)
+            advisoryUrl
+                ? hoverActionChip("link-external", "Open Advisory", advisoryUrl)
                 : hoverActionChip("link-external", "Open Advisory", "command:packageHub.openAdvisory"),
             this.whyLink(packageId, projectName),
             hoverActionChip(
@@ -185,6 +221,10 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         }
         if (versions.length > 0) {
             lines.push(versions.join(" · "));
+        }
+        const ageNotice = peek.latest ? releaseAgeNotice(packageId, peek.latest) : undefined;
+        if (ageNotice) {
+            lines.push(escapeHtml(ageNotice));
         }
         if (peek.latest && peek.latestPreferred === false) {
             lines.push(
@@ -267,8 +307,7 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         channel: "patch" | "latest",
         packageId: string,
         projectName: string | undefined,
-        peek: { ready: boolean; patch?: string; latest?: string; latestPreferred?: boolean },
-        advisoryUrl?: string
+        peek: { ready: boolean; patch?: string; latest?: string; latestPreferred?: boolean }
     ): string {
         const version = channel === "patch" ? peek.patch : peek.latest;
         const icon = channel === "patch" ? "arrow-circle-up" : "tag";

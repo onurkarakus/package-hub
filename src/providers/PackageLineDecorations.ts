@@ -3,7 +3,7 @@ import { PackageInfo } from "../models/PackageInfo";
 import { isMsBuildProject, isPackageDocumentPath } from "../services/projectFiles";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
-import { readPackageRef } from "../utils/nugetAudit";
+import { readPackageRefs } from "../utils/nugetAudit";
 import {
     packageLineFacts,
     packageLineHasProblem,
@@ -71,9 +71,9 @@ export class PackageLineDecorations implements vscode.Disposable {
                 ? this.scanner.getProjectName(editor.document.uri)
                 : undefined;
 
-            for (let line = 0; line < editor.document.lineCount; line++) {
-                const ref = readPackageRef(editor.document.lineAt(line).text);
-                if (!ref) {
+            for (const ref of readPackageRefs(editor.document.getText())) {
+                const line = ref.line;
+                if (line >= editor.document.lineCount) {
                     continue;
                 }
 

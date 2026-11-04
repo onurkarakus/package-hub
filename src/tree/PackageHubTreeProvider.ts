@@ -4,8 +4,8 @@ import { PackageInfo } from "../models/PackageInfo";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { directProjectNames, formatProjectRelations, transitiveCaption } from "../services/TransitiveOrigin";
-import { readPackageRef } from "../utils/nugetAudit";
-import { deprecate } from "node:util";
+import { getFeedHealth } from "../services/FeedHealth";
+import { readPackageRefs, severityRank as severityLevel } from "../utils/nugetAudit";
 
 const errorColor = new vscode.ThemeColor("problemsErrorIcon.foreground");
 const warningColor = new vscode.ThemeColor("problemsWarningIcon.foreground");
@@ -59,9 +59,17 @@ export class PackageHubTreeItem extends vscode.TreeItem {
     }
 }
 
+let sharedScanner: WorkspaceScanner = new WorkspaceScanner();
+
 export class PackageHubTreeProvider
     implements vscode.TreeDataProvider<PackageHubTreeItem> {
     private view?: vscode.TreeView<PackageHubTreeItem>;
+
+    constructor(scanner?: WorkspaceScanner) {
+        if (scanner) {
+            sharedScanner = scanner;
+        }
+    }
     private _onDidChangeTreeData = new vscode.EventEmitter<
         PackageHubTreeItem | undefined | null | void
     >();
@@ -101,7 +109,10 @@ export class PackageHubTreeProvider
         }
 
         if (!element) {
-            const projects = await new WorkspaceScanner().findProjects();
+            const projects = await sharedScanner.findProjects();
+            const feeds = getFeedHealth();
+            const failingFeeds = feeds.statuses.filter((status) => status.enabled && status.failures.length > 0).length
+                + (feeds.unmatched.length > 0 ? 1 : 0);
             const expandProjects = projects.length > 0 && projects.length <= 4 && vulnerable.length > 0;
             return [
                 section("Vulnerable", vulnerable.length, vulnerable.length > 0, new vscode.ThemeIcon("error", errorColor)),
@@ -115,6 +126,15 @@ export class PackageHubTreeProvider
                     new vscode.ThemeIcon("project"),
                     projects.length > 0
                 ),
+                new PackageHubTreeItem("Feeds", vscode.TreeItemCollapsibleState.Collapsed, {
+                    description: feeds.sources
+                        ? `${feeds.sources.filter((source) => source.enabled).length} enabled${failingFeeds > 0 ? ` · ${failingFeeds} failed` : ""}`
+                        : "Not read",
+                    icon: failingFeeds > 0
+                        ? new vscode.ThemeIcon("warning", warningColor)
+                        : new vscode.ThemeIcon("cloud"),
+                    tooltip: "Package sources dotnet uses, and failures from the last scan or restore.",
+                }),
                 new PackageHubTreeItem("Actions", vscode.TreeItemCollapsibleState.Collapsed, {
                     icon: new vscode.ThemeIcon("tools"),
                 }),
@@ -181,6 +201,10 @@ export class PackageHubTreeProvider
                     new vscode.ThemeIcon("diff", warningColor)
                 )
             );
+        }
+
+        if (element.label === "Feeds") {
+            return feedNodes();
         }
 
         if (element.label === "Actions") {
@@ -261,7 +285,7 @@ function packageItem(
 }
 
 async function projectNodes(): Promise<PackageHubTreeItem[]> {
-    const scanner = new WorkspaceScanner();
+    const scanner = sharedScanner;
     const projects = await scanner.findProjects();
     projects.sort((left, right) =>
         scanner.getProjectName(left).localeCompare(scanner.getProjectName(right))
@@ -328,9 +352,8 @@ async function readProjectPackages(
     }
 
     const packages = new Map<string, { id: string; version?: string }>();
-    for (const line of text.split(/\r?\n/)) {
-        const ref = readPackageRef(line);
-        if (!ref || ref.kind !== "reference") {
+    for (const ref of readPackageRefs(text)) {
+        if (ref.kind !== "reference") {
             continue;
         }
         const key = ref.id.toLowerCase();
@@ -488,19 +511,56 @@ function packageTooltip(id: string, description: string): vscode.MarkdownString 
     return tooltip;
 }
 
+/**
+ * Sort order: critical first, unknown severity last.
+ */
 function severityRank(severity?: string): number {
-    switch ((severity || "").toLowerCase()) {
-        case "critical":
-            return 0;
-        case "high":
-            return 1;
-        case "moderate":
-            return 2;
-        case "low":
-            return 3;
-        default:
-            return 4;
+    return 4 - severityLevel(severity);
+}
+
+function feedNodes(): PackageHubTreeItem[] {
+    const state = getFeedHealth();
+    if (!state.sources) {
+        return [new PackageHubTreeItem(
+            state.sourceError ? "dotnet did not list the sources" : "Scan to read the sources",
+            vscode.TreeItemCollapsibleState.None,
+            { icon: new vscode.ThemeIcon("info", infoColor), tooltip: state.sourceError }
+        )];
     }
+    const items = state.statuses.map((status) => {
+        const failed = status.failures.length > 0;
+        const tooltip = new vscode.MarkdownString(undefined, true);
+        tooltip.appendText(status.url);
+        for (const failure of status.failures) {
+            tooltip.appendMarkdown("\n\n");
+            tooltip.appendText(`${failure.code}: ${failure.message}`);
+        }
+        for (const hint of status.hints) {
+            tooltip.appendMarkdown("\n\n");
+            tooltip.appendText(hint);
+        }
+        tooltip.isTrusted = false;
+        return new PackageHubTreeItem(status.name, vscode.TreeItemCollapsibleState.None, {
+            description: !status.enabled ? "disabled" : failed ? `failed (${status.failures[0].code})` : "enabled",
+            icon: !status.enabled
+                ? new vscode.ThemeIcon("circle-slash")
+                : failed
+                    ? new vscode.ThemeIcon("error", errorColor)
+                    : new vscode.ThemeIcon("cloud"),
+            tooltip,
+        });
+    });
+    for (const failure of state.unmatched) {
+        items.push(new PackageHubTreeItem(failure.code, vscode.TreeItemCollapsibleState.None, {
+            description: failure.message,
+            icon: new vscode.ThemeIcon("warning", warningColor),
+            tooltip: failure.message,
+        }));
+    }
+    if (items.length === 0) {
+        items.push(emptyItem("No package sources"));
+    }
+    return items;
 }
 
 function severityIcon(severity?: string): vscode.ThemeIcon {

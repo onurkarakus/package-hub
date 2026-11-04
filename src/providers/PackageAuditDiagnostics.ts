@@ -1,18 +1,53 @@
 import * as fs from "fs/promises";
 import * as vscode from "vscode";
 import { PackageInfo, TransitiveOrigin } from "../models/PackageInfo";
-import { isMsBuildProject } from "../services/projectFiles";
+import { isMsBuildProject, isPackageDocumentPath } from "../services/projectFiles";
 import { originForProject } from "../services/TransitiveOrigin";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { logger } from "../utils/logger";
-import { auditCodeForSeverity, readPackageRef } from "../utils/nugetAudit";
+import { auditCodeForSeverity, readPackageRefs } from "../utils/nugetAudit";
 
 export class PackageAuditDiagnostics implements vscode.Disposable {
     private readonly collection = vscode.languages.createDiagnosticCollection("packageHub");
     private affectedProjectPaths: string[] = [];
+    private readonly subscriptions: vscode.Disposable[] = [];
+    private readonly editTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-    constructor(private readonly scanner: WorkspaceScanner) { }
+    constructor(private readonly scanner: WorkspaceScanner) {
+        this.subscriptions.push(
+            vscode.workspace.onDidChangeTextDocument((event) => {
+                if (event.document.uri.scheme !== "file" || !isPackageDocumentPath(event.document.uri.fsPath)) {
+                    return;
+                }
+                this.scheduleDocument(event.document);
+            })
+        );
+    }
+
+    /**
+     * Recomputes diagnostics for one open document from its buffer, 300 ms
+     * after the last edit.
+     */
+    private scheduleDocument(document: vscode.TextDocument): void {
+        const key = document.uri.toString();
+        const pending = this.editTimers.get(key);
+        if (pending) {
+            clearTimeout(pending);
+        }
+        this.editTimers.set(key, setTimeout(() => {
+            this.editTimers.delete(key);
+            void this.refreshDocument(document);
+        }, 300));
+    }
+
+    async refreshDocument(document: vscode.TextDocument): Promise<void> {
+        if (!ScanState.getScannedAt() || document.isClosed) {
+            return;
+        }
+        const diagnostics = this.diagnosticsForText(document.uri, document.getText(), ScanState.getVulnerable());
+        this.collection.set(document.uri, diagnostics);
+    }
 
     affectedProjects(): string[] {
         return this.affectedProjectPaths;
@@ -55,6 +90,13 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
     }
 
     dispose(): void {
+        for (const timer of this.editTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.editTimers.clear();
+        for (const item of this.subscriptions) {
+            item.dispose();
+        }
         this.collection.dispose();
     }
 
@@ -78,12 +120,12 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
 
         const needle = broughtBy.toLowerCase();
         const index = lines.findIndex((line) => {
-            const include = line.match(/Include\s*=\s*"([^"]+)"/i);
+            const include = line.match(/(?:Include|Update)\s*=\s*(?:"([^"]+)"|'([^']+)')/i);
             if (!include) {
                 return false;
             }
 
-            const value = include[1].toLowerCase();
+            const value = (include[1] ?? include[2]).toLowerCase();
             return value === needle
                 || value.endsWith(`/${needle}.csproj`)
                 || value.endsWith(`\\${needle}.csproj`)
@@ -96,46 +138,59 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         return index >= 0 ? index : 0;
     }
 
+    /**
+     * Reads an open document from the editor buffer, so unsaved edits count.
+     * A closed file is read from disk.
+     */
     private async diagnosticsForFile(
         uri: vscode.Uri,
         vulnerable: PackageInfo[]
     ): Promise<vscode.Diagnostic[]> {
+        const open = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString());
         let text = "";
-        try {
-            text = await fs.readFile(uri.fsPath, "utf8");
-        } catch (error: any) {
-            logger.error(`Could not read the file for diagnostics (${uri.fsPath}): ${error.message}`);
-            return [];
+        if (open) {
+            text = open.getText();
+        } else {
+            try {
+                text = await fs.readFile(uri.fsPath, "utf8");
+            } catch (error: any) {
+                logger.error(`Could not read the file for diagnostics (${uri.fsPath}): ${error.message}`);
+                return [];
+            }
         }
+        return this.diagnosticsForText(uri, text, vulnerable);
+    }
 
+    private diagnosticsForText(
+        uri: vscode.Uri,
+        text: string,
+        vulnerable: PackageInfo[]
+    ): vscode.Diagnostic[] {
         const lines = text.split(/\r?\n/);
         const diagnostics: vscode.Diagnostic[] = [];
         const seen = new Set<string>();
         const isProject = isMsBuildProject(uri.fsPath);
         const projectName = isProject ? this.scanner.getProjectName(uri) : undefined;
 
-        lines.forEach((line, index) => {
-            const ref = readPackageRef(line);
-            if (!ref) {
-                return;
-            }
-
+        for (const ref of readPackageRefs(text)) {
+            const index = ref.line;
+            const line = lines[index] ?? "";
             const pkg = vulnerable.find((item) => item.id.toLowerCase() === ref.id.toLowerCase());
             if (!pkg) {
-                return;
+                continue;
             }
 
             if (projectName && !this.packageInProject(pkg, projectName)) {
-                return;
+                continue;
             }
 
             if (this.lineAlreadyReported(uri, index, pkg.id)) {
-                return;
+                continue;
             }
 
-            diagnostics.push(this.createDiagnostic(index, line, pkg, false));
+            diagnostics.push(this.createDiagnostic(index, line, pkg, false, undefined, projectName));
             seen.add(pkg.id.toLowerCase());
-        });
+        }
 
         if (projectName) {
             for (const pkg of vulnerable) {
@@ -153,7 +208,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
                     continue;
                 }
 
-                diagnostics.push(this.createDiagnostic(line, lines[line] || "", pkg, true, origin));
+                diagnostics.push(this.createDiagnostic(line, lines[line] || "", pkg, true, origin, projectName));
             }
         }
 
@@ -179,8 +234,10 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
         text: string,
         pkg: PackageInfo,
         transitive: boolean,
-        origin?: TransitiveOrigin
+        origin?: TransitiveOrigin,
+        projectName?: string
     ): vscode.Diagnostic {
+        const version = (projectName ? ScanState.resolvedVersionIn(pkg.id, projectName) : undefined) || pkg.version;
         const end = Math.max(text.length, 1);
         const range = new vscode.Range(line, 0, line, end);
         const code = auditCodeForSeverity(pkg.severity);
@@ -195,7 +252,7 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
             : "";
         const diagnostic = new vscode.Diagnostic(
             range,
-            `Package '${pkg.id}' ${pkg.version}${transitiveWord} has a known ${severityWord} severity vulnerability${advisory}${pruned}`,
+            `Package '${pkg.id}' ${version}${transitiveWord} has a known ${severityWord} severity vulnerability${advisory}${pruned}`,
             vscode.DiagnosticSeverity.Warning
         );
 

@@ -1,5 +1,5 @@
 import * as fs from "fs/promises";
-import * as path from "path";
+import { assetsFileFor } from "./AssetsLocator";
 import { projectNameFromPath } from "./projectFiles";
 
 export type GraphSeverity = "Critical" | "High" | "Moderate" | "Low";
@@ -36,7 +36,7 @@ export class GraphBuilder {
         severityById?: ReadonlyMap<string, string>
     ): Promise<PackageGraph> {
         const projectName = projectNameFromPath(projectPath);
-        const assetsPath = path.join(path.dirname(projectPath), "obj", "project.assets.json");
+        const assetsPath = await assetsFileFor(projectPath);
 
         let text = "";
         try {

@@ -7,6 +7,7 @@ import { advisoryVerdict, firstFixedVersion } from "../services/AdvisoryCatalog"
 import { latestReleasePreferred } from "../services/ReleaseAge";
 import { isMsBuildProject } from "../services/projectFiles";
 import { originForProject } from "../services/TransitiveOrigin";
+import { highestPatchFromLocal } from "../services/PatchFallback";
 import { logger } from "../utils/logger";
 import {
     advisoryUrlIn,
@@ -14,7 +15,7 @@ import {
     isAuditCode,
     parseAdvisoryPackage,
     readDiagnosticCode,
-    readPackageRef,
+    packageRefAtLine,
     sameNuGetVersion,
 } from "../utils/nugetAudit";
 
@@ -22,11 +23,17 @@ interface VersionLists {
     at: number;
     patch: PackageInfo[];
     latest: PackageInfo[];
+    /** False when the lists came from a scan that read direct packages only. */
+    includesTransitive: boolean;
 }
+
+const CACHE_MS = 5 * 60 * 1000;
 
 export class PackageCodeActionProvider implements vscode.CodeActionProvider {
     private readonly cache = new Map<string, VersionLists>();
     private readonly inflight = new Map<string, Promise<VersionLists | undefined>>();
+    /** Bumped by clearCache(). A fetch that started earlier does not fill the cache. */
+    private generation = 0;
 
     constructor(
         private readonly dotnetCli: DotnetCli,
@@ -34,7 +41,21 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
     ) { }
 
     clearCache(): void {
+        this.generation += 1;
         this.cache.clear();
+        this.inflight.clear();
+    }
+
+    /**
+     * Stores lists a scan already read, so the lightbulb does not run the same
+     * dotnet commands again.
+     */
+    seed(projectPath: string, patch: PackageInfo[], latest: PackageInfo[], includesTransitive: boolean): void {
+        const known = this.cache.get(projectPath);
+        if (known && known.includesTransitive && !includesTransitive && Date.now() - known.at < CACHE_MS) {
+            return;
+        }
+        this.cache.set(projectPath, { at: Date.now(), patch, latest, includesTransitive });
     }
 
     async peekUpdateTargets(
@@ -64,14 +85,18 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         };
     }
 
-    async prefetch(projectPaths: string[]): Promise<void> {
+    /**
+     * Reads the lists for projects that need them. Projects whose vulnerable
+     * packages are all direct reuse what the scan read.
+     */
+    async prefetch(projectPaths: string[], needsTransitive: (projectPath: string) => boolean = () => true): Promise<void> {
         const pending = [...new Set(projectPaths)];
 
         for (let index = 0; index < pending.length; index += 2) {
             const batch = pending.slice(index, index + 2);
             await Promise.all(batch.map(async (projectPath) => {
                 try {
-                    await this.cachedLists(projectPath);
+                    await this.cachedLists(projectPath, needsTransitive(projectPath));
                 } catch (error: any) {
                     logger.error(`Could not read the patch version (${projectPath}): ${error.message}`);
                 }
@@ -98,8 +123,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         for (const diagnostic of auditDiagnostics) {
             const fromMessage = parseAdvisoryPackage(diagnostic.message);
-            const line = document.lineAt(diagnostic.range.start.line).text;
-            const onLine = readPackageRef(line);
+            const onLine = packageRefAtLine(document.getText(), diagnostic.range.start.line);
             const packageId = fromMessage?.id || onLine?.id;
 
             if (!packageId || seen.has(packageId.toLowerCase())) {
@@ -146,18 +170,19 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         }
 
         const current = ScanState.findPackage(packageId);
-        const lineVersion = readPackageRef(
-            document.lineAt(diagnostic.range.start.line).text
-        )?.version;
-        const currentVersion = lineVersion || current.vulnerable?.version || current.outdated?.version;
+        const projectName = isMsBuildProject(document.fileName)
+            ? this.scanner.getProjectName(document.uri)
+            : undefined;
+        const lineVersion = packageRefAtLine(document.getText(), diagnostic.range.start.line)?.version;
+        const currentVersion = ScanState.resolvedVersionIn(packageId, projectName)
+            || current.vulnerable?.version
+            || current.outdated?.version
+            || lineVersion;
         const targets = chooseQuickFixVersions(
             currentVersion,
             this.versionFrom(lists?.patch, packageId),
             this.versionFrom(lists?.latest, packageId) || current.outdated?.latestVersion
         );
-        const projectName = isMsBuildProject(document.fileName)
-            ? this.scanner.getProjectName(document.uri)
-            : undefined;
         const advisory = current.vulnerable?.advisoryUrl || advisoryUrlIn(diagnostic.message);
         const actions: vscode.CodeAction[] = [];
         const origin = originForProject(current.vulnerable, projectName);
@@ -413,16 +438,16 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
     }
 
     private freshLists(lists: VersionLists | undefined): VersionLists | undefined {
-        if (!lists || Date.now() - lists.at >= 5 * 60 * 1000) {
+        if (!lists || Date.now() - lists.at >= CACHE_MS) {
             return undefined;
         }
 
         return lists;
     }
 
-    private cachedLists(projectPath: string): Promise<VersionLists | undefined> {
+    private cachedLists(projectPath: string, needsTransitive = true): Promise<VersionLists | undefined> {
         const hit = this.cache.get(projectPath);
-        if (hit && Date.now() - hit.at < 5 * 60 * 1000) {
+        if (hit && Date.now() - hit.at < CACHE_MS && (hit.includesTransitive || !needsTransitive)) {
             return Promise.resolve(hit);
         }
 
@@ -433,19 +458,38 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         const job = this.fetchLists(projectPath)
             .finally(() => {
-                this.inflight.delete(projectPath);
+                if (this.inflight.get(projectPath) === job) {
+                    this.inflight.delete(projectPath);
+                }
             });
         this.inflight.set(projectPath, job);
         return job;
     }
 
     private async fetchLists(projectPath: string): Promise<VersionLists | undefined> {
-        const [patch, latest] = await Promise.all([
-            this.dotnetCli.listOutdated(projectPath, true, "patch", undefined, ScanState.includePrerelease()),
-            this.dotnetCli.listOutdated(projectPath, true, "latest", undefined, ScanState.includePrerelease()),
+        const generation = this.generation;
+        const prerelease = ScanState.includePrerelease();
+        const [patchResult, latestResult] = await Promise.allSettled([
+            this.dotnetCli.listOutdated(projectPath, true, "patch", undefined, prerelease),
+            this.dotnetCli.listOutdated(projectPath, true, "latest", undefined, prerelease),
         ]);
+        if (latestResult.status === "rejected") {
+            throw latestResult.reason;
+        }
+        const latest = latestResult.value;
+        let patch: PackageInfo[];
+        if (patchResult.status === "fulfilled") {
+            patch = patchResult.value;
+        } else {
+            logger.info(`dotnet could not list the highest patch for ${projectPath} (${patchResult.reason?.message || patchResult.reason}). Using the local version list.`);
+            patch = await highestPatchFromLocal(latest, prerelease);
+        }
 
-        const lists: VersionLists = { at: Date.now(), patch, latest };
+        const lists: VersionLists = { at: Date.now(), patch, latest, includesTransitive: true };
+        if (generation !== this.generation) {
+            // A scan cleared the cache while this ran. Its data may be stale.
+            return lists;
+        }
         this.cache.set(projectPath, lists);
         return lists;
     }
