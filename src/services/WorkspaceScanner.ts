@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { projectNameFromPath } from "./projectFiles";
+import { classicSolutionPaths } from "./SolutionTargets";
 import { logger } from "../utils/logger";
 
 export class WorkspaceScanner {
@@ -22,6 +23,18 @@ export class WorkspaceScanner {
    */
     async findProjects(): Promise<vscode.Uri[]> {
         return this.find("**/*.{csproj,fsproj}", "Could not read projects");
+    }
+
+    /**
+     * Counts what a scan can read: C# and F# projects plus classic .sln files.
+     * A .sln can point at projects outside the workspace, so it counts on its own.
+     */
+    async countScanTargets(): Promise<{ projects: vscode.Uri[]; targets: number }> {
+        const [projects, solutions] = await Promise.all([this.findProjects(), this.findSolutions()]);
+        return {
+            projects,
+            targets: projects.length + classicSolutionPaths(solutions.map((item) => item.fsPath)).length,
+        };
     }
 
     /**

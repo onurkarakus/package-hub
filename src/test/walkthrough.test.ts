@@ -41,6 +41,8 @@ suite("Get Started", () => {
             [...text.matchAll(/\(command:([\w.]+)/g)].map((match) => match[1])
         );
         assert.ok(links.includes("packageHub.openWalkthrough"));
+        // Why needs a package from the editor line or the tree, so the walkthrough does not link it bare.
+        assert.ok(!links.includes("packageHub.whyPackage"));
         for (const id of links) {
             assert.ok(commands.has(id), `${id} is not a registered command`);
         }

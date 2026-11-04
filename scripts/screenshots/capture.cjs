@@ -25,7 +25,7 @@
 // Options:
 //   --code <path>        VS Code executable. Default: stable, downloaded with @vscode/test-electron.
 //   --vsix <path>        The packaged extension to install (required).
-//   --workspace <path>   Where the sample is copied. Default: <tmp>/contoso-shop.
+//   --workspace <path>   New folder for the sample copy; must not exist. Default: a new temp folder.
 //   --out <dir>          Output folder. Default: docs/images.
 //   --session dark|light|all   Default: all.
 //   --only a,b           Only these shots: line-marks, hover, quick-fix, tree,
@@ -46,7 +46,10 @@ const flag = (name) => process.argv.includes(`--${name}`);
 const { _electron } = require(arg("playwright", "playwright-core"));
 
 const vsix = path.resolve(arg("vsix", ""));
-const workspace = path.resolve(arg("workspace", path.join(os.tmpdir(), "contoso-shop")));
+// The sample is copied to a new folder. A --workspace path must not exist yet,
+// so the script never deletes or overwrites a folder it did not create.
+const workspaceArg = arg("workspace");
+const workspace = workspaceArg ? path.resolve(workspaceArg) : path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ph-shot-ws-")), "contoso-shop");
 const out = path.resolve(arg("out", path.join(repo, "docs", "images")));
 const only = arg("only");
 const walkthroughMedia = flag("walkthrough-media");
@@ -64,7 +67,10 @@ const resolveCode = async () => {
 
 // Copies the sample so restore output and VS Code state stay out of the repo.
 const prepareWorkspace = () => {
-  fs.rmSync(workspace, { recursive: true, force: true });
+  if (fs.existsSync(workspace)) {
+    throw new Error(`${workspace} already exists. Pass a --workspace path that does not exist, or leave it out.`);
+  }
+  fs.mkdirSync(path.dirname(workspace), { recursive: true });
   fs.cpSync(path.join(repo, "samples", "contoso-shop"), workspace, {
     recursive: true,
     filter: (src) => !/[\\/](bin|obj)$/.test(src),

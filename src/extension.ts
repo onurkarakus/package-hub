@@ -525,7 +525,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	void workspaceScanner.findProjects()
 		.then(async (projects) => {
-			void vscode.commands.executeCommand("setContext", "packageHub.hasProjects", projects.length > 0);
+			void workspaceScanner.countScanTargets().then((found) =>
+				vscode.commands.executeCommand("setContext", "packageHub.hasProjects", found.targets > 0)
+			);
 			const gap = await workspaceHasAuditDataGap(projects.map((project) => project.fsPath));
 			ScanState.setAuditDataGap(gap);
 			paintScanStatus(statusBarItem);
@@ -553,10 +555,14 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// A new or deleted project file changes what the Package Health view shows.
-	const projectWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj}", false, true, false);
+	const projectWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,sln}", false, true, false);
 	projectWatcher.onDidCreate(() => treeProvider.refresh());
 	projectWatcher.onDidDelete(() => treeProvider.refresh());
-	context.subscriptions.push(projectWatcher);
+	context.subscriptions.push(
+		projectWatcher,
+		// Adding or removing a workspace folder changes what can be scanned without creating a file.
+		vscode.workspace.onDidChangeWorkspaceFolders(() => treeProvider.refresh())
+	);
 
 	const openWalkthroughCommand = vscode.commands.registerCommand(
 		"packageHub.openWalkthrough",
@@ -1833,9 +1839,9 @@ export function activate(context: vscode.ExtensionContext) {
 		&& workspaceScanner.getWorkspaceRoot()
 	) {
 		setTimeout(() => {
-			// Opening the view in a folder without projects activates the extension too. Do not scan there.
-			void workspaceScanner.findProjects().then((projects) => {
-				if (projects.length > 0) {
+			// Opening the view in a folder without projects or solutions activates the extension too. Do not scan there.
+			void workspaceScanner.countScanTargets().then((found) => {
+				if (found.targets > 0) {
 					void vscode.commands.executeCommand("packageHub.scanWorkspace");
 				}
 			});

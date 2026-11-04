@@ -92,10 +92,13 @@ export class PackageHubTreeProvider
         if (!element) {
             // An empty root lets the welcome view (viewsWelcome) explain what to open.
             const folderCount = vscode.workspace.workspaceFolders?.length ?? 0;
-            rootProjects = folderCount > 0 ? await new WorkspaceScanner().findProjects() : [];
-            const state = welcomeState(folderCount, rootProjects.length);
+            const found = folderCount > 0
+                ? await new WorkspaceScanner().countScanTargets()
+                : { projects: [] as vscode.Uri[], targets: 0 };
+            rootProjects = found.projects;
+            const state = welcomeState(folderCount, found.targets);
             void vscode.commands.executeCommand("setContext", "packageHub.noProjects", state === "noProjects");
-            void vscode.commands.executeCommand("setContext", "packageHub.hasProjects", rootProjects.length > 0);
+            void vscode.commands.executeCommand("setContext", "packageHub.hasProjects", found.targets > 0);
             if (state) {
                 return [];
             }
