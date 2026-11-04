@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Get Started** walkthrough with seven steps: open a .NET project, run the first scan, read the line marks, apply a safe update from the lightbulb, open Package Health and the dashboard, ask "Why is this here?", and tune `minimumSeverity`, `includePrerelease` and `minimumReleaseAge`. Open it with `PackageHub: Get Started` or from the Package Health view menu.
+- The Package Health view explains what to do when no folder is open or the folder has no `.csproj`, `.fsproj` or `.sln` file, with links to open a folder, scan again or get started. It updates when project or solution files are added or removed and when workspace folders change.
+- Manifest strings (commands, settings, views, walkthrough) moved to `package.nls.json`, ready for translations.
+- A sample solution in `samples/contoso-shop` (four projects, Central Package Management, vulnerable, outdated, deprecated and current packages) and a script in `scripts/screenshots` that captures the README screenshots from a real VS Code window.
+
+### Changed
+
+- New README with screenshots of every feature, a quick start, Central Package Management, commands, settings, privacy and FAQ sections. Images use repository paths.
+- `package.json` has `repository`, `homepage`, `bugs` and `author` fields.
+- Planning notes were removed from `docs/`, and `.DS_Store` is ignored.
+
+### Fixed
+
+- Opening the Package Health view in a folder without a `.csproj`, `.fsproj` or `.sln` file no longer starts a scan that ends in an error. The view shows its welcome message instead.
+
 ## [0.0.4] - 2026-10-15
 
 ### Fixed

@@ -525,6 +525,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	void workspaceScanner.findProjects()
 		.then(async (projects) => {
+			void workspaceScanner.countScanTargets().then((found) =>
+				vscode.commands.executeCommand("setContext", "packageHub.hasProjects", found.targets > 0)
+			);
 			const gap = await workspaceHasAuditDataGap(projects.map((project) => project.fsPath));
 			ScanState.setAuditDataGap(gap);
 			paintScanStatus(statusBarItem);
@@ -550,6 +553,26 @@ export function activate(context: vscode.ExtensionContext) {
 			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 		)
 	);
+
+	// A new or deleted project file changes what the Package Health view shows.
+	const projectWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,sln}", false, true, false);
+	projectWatcher.onDidCreate(() => treeProvider.refresh());
+	projectWatcher.onDidDelete(() => treeProvider.refresh());
+	context.subscriptions.push(
+		projectWatcher,
+		// Adding or removing a workspace folder changes what can be scanned without creating a file.
+		vscode.workspace.onDidChangeWorkspaceFolders(() => treeProvider.refresh())
+	);
+
+	const openWalkthroughCommand = vscode.commands.registerCommand(
+		"packageHub.openWalkthrough",
+		() => vscode.commands.executeCommand(
+			"workbench.action.openWalkthrough",
+			`${context.extension.id}#packageHub.getStarted`,
+			false
+		)
+	);
+	context.subscriptions.push(openWalkthroughCommand);
 
 	// Health Dashboard
 	const showDashboardCommand = vscode.commands.registerCommand(
@@ -1816,7 +1839,12 @@ export function activate(context: vscode.ExtensionContext) {
 		&& workspaceScanner.getWorkspaceRoot()
 	) {
 		setTimeout(() => {
-			vscode.commands.executeCommand("packageHub.scanWorkspace");
+			// Opening the view in a folder without projects or solutions activates the extension too. Do not scan there.
+			void workspaceScanner.countScanTargets().then((found) => {
+				if (found.targets > 0) {
+					void vscode.commands.executeCommand("packageHub.scanWorkspace");
+				}
+			});
 		}, 2000);
 	}
 }
