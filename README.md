@@ -101,19 +101,29 @@ Choose **Why is this here?** from the hover or from the line’s right-click men
 | `packageHub.scanOnStartup` | Scans your packages when the folder opens | `true` |
 | `packageHub.includePrerelease` | Adds prereleases to the next outdated list. The vulnerability scan stays the same | `false` |
 | `packageHub.minimumSeverity` | Lowest severity PackageHub lists. It does not change `NuGetAuditLevel` in the project | `low` |
-| `packageHub.minimumReleaseAge` | How many days old a latest version must be. `0` is off. The highest-patch suggestion ignores this | `0` |
+| `packageHub.minimumReleaseAge` | How many days old a latest version must be. `0` is off. The highest-patch suggestion ignores this. Publish dates come from the local NuGet cache | `0` |
 | `packageHub.dashboardViewMode` | Dashboard layout: `list`, `byProject`, or `byPackage` | `list` |
 | `packageHub.ignoredPackages` | Package ids hidden from the lists | `[]` |
+| `packageHub.onlineLookups` | Lets PackageHub ask nuget.org itself for advisory ranges and publish dates that are not in the local cache | `false` |
+| `packageHub.timeouts.listSeconds` | Timeout for `dotnet list package` and other quick commands | `120` |
+| `packageHub.timeouts.outdatedSeconds` | Timeout for the outdated and deprecated lists | `300` |
+| `packageHub.timeouts.restoreSeconds` | Timeout for `dotnet restore` and `dotnet add package` | `600` |
+| `packageHub.maxDotnetProcesses` | How many `dotnet` processes run at the same time | `4` |
 
 ## Requirements
 
-- VS Code 1.125.0 or newer
+- VS Code 1.74 or newer, or a compatible editor such as Cursor or VSCodium
 - `dotnet` on your PATH
 - .NET SDK 8.0.400 or newer for Why
 
 ## Privacy
 
-Scanning, updating, and the path lookup stay on this machine. PackageHub does not collect or send usage data.
+PackageHub is local-first. With the default settings the extension itself makes no network request and collects no usage data.
+
+- All package data comes from the `dotnet` CLI on your machine and from local files: your project files, `project.assets.json`, and the NuGet caches `dotnet` already wrote.
+- `dotnet` itself contacts the package sources in your NuGet.config when it restores, lists outdated or vulnerable packages, or adds a package. That is the same traffic as running those commands yourself. PackageHub runs them with `DOTNET_CLI_TELEMETRY_OPTOUT=1`.
+- Only when you turn on `packageHub.onlineLookups` does PackageHub contact `api.nuget.org` over HTTPS itself: for advisory version ranges and for publish dates used by `packageHub.minimumReleaseAge`, when they are not in the local NuGet cache. With it off, a missing publish date is reported as unknown and the age gate is not applied.
+- Opening a NuGet or advisory page only happens when you click it, in your browser.
 
 ## Feedback
 

@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.1.0] - 2026-11-05
+
+### Added
+
+- Local-first by default: PackageHub makes no network request of its own. Advisory ranges and publish dates are read from the NuGet cache `dotnet` already wrote. The new `packageHub.onlineLookups` setting (off by default) allows asking nuget.org when local data is missing.
+- Feed health: the tree and the dashboard list the NuGet sources `dotnet` uses, whether each is enabled, which ones failed in the last scan or restore (NU1301, NU1302, NU1801, NU1900, NU1905), and credential provider hints.
+- An update summary before every update: from and to versions, patch/minor/major, advisories closed or still open, direct or transitive, affected projects, whether a CPM file is edited, and prerelease and age warnings.
+- Pinning a transitive package asks for its own confirmation.
+- Version conflicts are found per project and target framework.
+- Settings for `dotnet` timeouts and for how many `dotnet` processes run at once.
+- `npm run test:min` runs the tests on the oldest supported VS Code. `npm run publish:ovsx` and PUBLISHING.md for Open VSX.
+
+### Changed
+
+- Works on VS Code 1.74 and newer, so it installs in Cursor and VSCodium.
+- `dotnet` runs with an argument list and no shell. Package ids and versions are checked before any command runs.
+- `dotnet` output that cannot be read, and projects `dotnet` reports as errors, are shown as not checked instead of healthy.
+- A failed update or restore shows the exit code and the error lines and is never reported as success.
+- NuGet version order follows NuGet rules: four-part versions, prerelease labels, build metadata ignored. Ranges, floating versions and properties are not compared. Highest patch never picks a prerelease.
+- Project data comes from MSBuild evaluation when the SDK supports it, so `VersionOverride`, the nearest `Directory.Packages.props`, CPM turned on outside the props file, and `GlobalPackageReference` are handled. The file fallback ignores XML comments and reads single quotes, `Update=` and multi-line elements.
+- Updates, removes and bulk updates run one at a time. Saving a project file restores and scans once, after a short pause.
+- Projects outside any solution are scanned, and projects shared by several solutions are scanned once.
+- Warnings follow unsaved edits in open project files.
+- The dashboard uses a strict content security policy and checks every message from the page. Hover links can run only PackageHub commands, and only HTTPS advisory links are shown.
+- The status bar stays neutral in a folder with no .NET project, and the scan sets the `packageHub.scanCompleted` context key.
+- `project.assets.json` is found when `BaseIntermediateOutputPath`, `MSBuildProjectExtensionsPath` or `UseArtifactsOutput` move it.
+- The extension activates only in folders with .NET projects, and is turned off in untrusted workspaces.
+
+### Fixed
+
+- When `dotnet list package --highest-patch` fails ("Sequence contains no matching element"), the highest patch is worked out from the local version list instead of disappearing.
+- The deprecated table shows its own empty message.
+- Ignoring a package works from `.fsproj` files.
+- The remaining Turkish messages are in English.
+
 ## [0.0.4] - 2026-10-15
 
 ### Fixed
