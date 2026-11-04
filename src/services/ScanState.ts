@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
-import { PackageInfo } from "../models/PackageInfo";
+import { PackageEntry, PackageInfo } from "../models/PackageInfo";
 import { meetsMinimumSeverity } from "../utils/nugetAudit";
+import { findVersionConflicts } from "./PackageList";
 
 export interface PackageSourceState {
     found: boolean;
@@ -14,6 +15,7 @@ export class ScanState {
     private static deprecated: PackageInfo[] = [];
     private static installed: PackageInfo[] = [];
     private static provenProjects: string[] = [];
+    private static unreadableProjects: string[] = [];
     private static scannedAt: Date | undefined;
     private static hasCpm = false;
     private static centralVersions = new Map<string, string>();
@@ -44,16 +46,30 @@ export class ScanState {
         return this.auditDataGap;
     }
 
-    static statusBarLabel(): { healthy: boolean; text: string } {
+    /**
+     * True when the last scan read at least one project. A folder with no
+     * .NET project, or a scan that could not read any, is not "healthy".
+     */
+    static scannedAnything(): boolean {
+        return !!this.scannedAt && (this.provenProjects.length > 0 || this.installed.length > 0);
+    }
+
+    static statusBarLabel(): { healthy: boolean; text: string; neutral?: boolean } {
         const vulnerable = this.getVulnerable().length;
         const outdated = this.getOutDated().length;
         const deprecated = this.getDeprecated().length;
-        const healthy = vulnerable + outdated + deprecated === 0 && !this.auditDataGap;
+        const unreadable = this.getUnreadableProjects().length;
+        const healthy = vulnerable + outdated + deprecated === 0 && !this.auditDataGap && unreadable === 0;
+        if (healthy && !this.scannedAnything()) {
+            return { healthy: true, text: "$(package) PackageHub", neutral: true };
+        }
         if (healthy) {
             return { healthy: true, text: "$(check) Packages healthy" };
         }
         if (vulnerable + outdated + deprecated === 0) {
-            return { healthy: false, text: "$(warning) Audit source" };
+            return unreadable > 0
+                ? { healthy: false, text: `$(warning) ${unreadable} project${unreadable === 1 ? "" : "s"} not checked` }
+                : { healthy: false, text: "$(warning) Audit source" };
         }
         return {
             healthy: false,
@@ -138,7 +154,7 @@ export class ScanState {
         outdated?: PackageInfo;
         deprecated?: PackageInfo
     } {
-        const id = packageId.toLocaleLowerCase();
+        const id = packageId.toLowerCase();
         const vulnerable = this.vulnerable.find((p) => p.id.toLowerCase() === id);
         const minimum = vscode.workspace.getConfiguration("packageHub").get<string>("minimumSeverity") || "low";
 
@@ -149,52 +165,90 @@ export class ScanState {
         };
     }
 
+    static setUnreadableProjects(names: string[]) {
+        this.unreadableProjects = [...names];
+    }
+
+    static getUnreadableProjects(): string[] {
+        return this.unreadableProjects;
+    }
+
+    /**
+     * Every per-project entry from the last scan: installed (direct) packages
+     * and the vulnerable, outdated and deprecated lists.
+     */
+    static allEntries(): PackageEntry[] {
+        const result: PackageEntry[] = [];
+        const seen = new Set<string>();
+        for (const pkg of [...this.installed, ...this.vulnerable, ...this.outdated, ...this.deprecated]) {
+            for (const entry of pkg.entries || []) {
+                const key = [entry.projectPath, entry.framework, entry.id, entry.isTransitive ? "t" : "d"]
+                    .join("\n").toLowerCase();
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    result.push(entry);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * The resolved version of a package in one project, when the scan saw it.
+     */
+    static resolvedVersionIn(packageId: string, projectName: string | undefined): string | undefined {
+        if (!projectName) {
+            return undefined;
+        }
+        const id = packageId.toLowerCase();
+        const name = projectName.toLowerCase();
+        for (const pkg of [this.installed, this.vulnerable, this.outdated, this.deprecated]
+            .map((list) => list.find((item) => item.id.toLowerCase() === id))) {
+            if (!pkg?.versionByProject) {
+                continue;
+            }
+            for (const [project, version] of Object.entries(pkg.versionByProject)) {
+                if (project.toLowerCase() === name && version) {
+                    return version;
+                }
+            }
+        }
+        return undefined;
+    }
+
+    /**
+     * Packages whose resolved version differs between projects or target
+     * frameworks. Read per project, so the first project's version does not
+     * hide the others.
+     */
     static getVersionConflicts(): {
         id: string;
         versions: { version: string; projects: string[] }[];
     }[] {
-        const all = [...this.getVulnerable(), ...this.outdated, ...this.deprecated];
-        const byId = new Map<string, { id: string; versions: Map<string, string[]> }>();
-
-        for (const p of all) {
-            const key = p.id.toLowerCase();
-            if (!byId.has(key)) {
-                byId.set(key, { id: p.id, versions: new Map() });
-            }
-
-            const versions = byId.get(key)!.versions;
-            const versionByProject: Record<string, string> =
-                (p as { versionByProject?: Record<string, string> }).versionByProject || {};
-
-            const entries =
-                Object.keys(versionByProject).length > 0
-                    ? Object.entries(versionByProject)
-                    : (p.projects || []).map((proj: string) => [proj, p.version]);
-
-            for (const [proj, version] of entries) {
-                if (!versions.has(version)) {
-                    versions.set(version, []);
-                }
-                if (!versions.get(version)!.includes(proj)) {
-                    versions.get(version)!.push(proj);
-                }
-            }
+        const entries = this.allEntries();
+        if (entries.length > 0) {
+            return findVersionConflicts(entries);
         }
 
-        const conflicts = [];
-
-        for (const bucket of byId.values()) {
-            if (bucket.versions.size > 1) {
-                conflicts.push({
-                    id: bucket.id,
-                    versions: Array.from(bucket.versions.entries()).map(([version, projects]) => ({
-                        version,
-                        projects,
-                    })),
+        // A scan saved by 0.0.x has no entries. Fall back to the per-project map.
+        const all = [...this.installed, ...this.getVulnerable(), ...this.outdated, ...this.deprecated];
+        const fallback: PackageEntry[] = [];
+        for (const p of all) {
+            const versions = p.versionByProject || {};
+            const pairs = Object.keys(versions).length > 0
+                ? Object.entries(versions)
+                : (p.projects || []).map((project) => [project, p.version] as [string, string]);
+            for (const [project, version] of pairs) {
+                fallback.push({
+                    id: p.id,
+                    projectName: project,
+                    projectPath: project,
+                    framework: "",
+                    resolvedVersion: version,
+                    isTransitive: false,
                 });
             }
         }
-
-        return conflicts;
+        return findVersionConflicts(fallback);
     }
 }

@@ -18,6 +18,7 @@ function packageInfo(patch: Partial<PackageInfo> = {}): PackageInfo {
 suite("Status bar", () => {
     teardown(() => {
         ScanState.setResults([], [], []);
+        ScanState.setUnreadableProjects([]);
         ScanState.setAuditDataGap(false);
     });
 
@@ -49,8 +50,25 @@ suite("Status bar", () => {
         assert.strictEqual(status.text, "$(warning) Audit source");
     });
 
+    test("no scanned project is neutral, not healthy", () => {
+        ScanState.setResults([], [], [], new Date(), [], []);
+        ScanState.setAuditDataGap(false);
+        const status = ScanState.statusBarLabel();
+        assert.strictEqual(status.neutral, true);
+        assert.strictEqual(status.text, "$(package) PackageHub");
+    });
+
+    test("an unreadable project is not healthy", () => {
+        ScanState.setResults([], [], [], new Date(), [], ["AuditQuickFix"]);
+        ScanState.setUnreadableProjects(["Consumer"]);
+        ScanState.setAuditDataGap(false);
+        const status = ScanState.statusBarLabel();
+        assert.strictEqual(status.healthy, false);
+        assert.strictEqual(status.text, "$(warning) 1 project not checked");
+    });
+
     test("zero problems say healthy", () => {
-        ScanState.setResults([], [], []);
+        ScanState.setResults([], [], [], new Date(), [], ["AuditQuickFix"]);
         ScanState.setAuditDataGap(false);
         const status = ScanState.statusBarLabel();
         assert.strictEqual(status.healthy, true);

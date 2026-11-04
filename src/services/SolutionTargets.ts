@@ -102,3 +102,52 @@ function samePath(left: string, right: string): boolean {
 
     return resolvedLeft === resolvedRight;
 }
+
+export interface ScanPlan {
+    /** Solutions to scan, without the ones whose projects are all covered by an earlier solution. */
+    solutions: string[];
+    /** Projects that belong to no scanned solution. They are scanned one by one. */
+    projects: string[];
+    /** Solutions left out because another solution already covers every project. */
+    skippedSolutions: string[];
+}
+
+/**
+ * Decides what to scan: every classic solution that adds at least one project,
+ * then every project that no solution covers. A project shared by overlapping
+ * solutions is scanned with the first one only (later duplicates are dropped
+ * when results are merged).
+ */
+export function planScanTargets(solutions: SolutionProjects[], projectPaths: string[]): ScanPlan {
+    const covered: string[] = [];
+    const plan: ScanPlan = { solutions: [], projects: [], skippedSolutions: [] };
+    const ordered = [...solutions].sort((left, right) =>
+        right.projects.length - left.projects.length || left.solutionPath.localeCompare(right.solutionPath)
+    );
+
+    for (const solution of ordered) {
+        if (solution.error) {
+            continue;
+        }
+        const adds = solution.projects.some((project) => !covered.some((item) => samePath(item, project)));
+        if (!adds && solution.projects.length > 0) {
+            plan.skippedSolutions.push(solution.solutionPath);
+            continue;
+        }
+        plan.solutions.push(solution.solutionPath);
+        for (const project of solution.projects) {
+            if (!covered.some((item) => samePath(item, project))) {
+                covered.push(project);
+            }
+        }
+    }
+
+    for (const projectPath of projectPaths) {
+        if (!covered.some((item) => samePath(item, projectPath))
+            && !plan.projects.some((item) => samePath(item, projectPath))) {
+            plan.projects.push(projectPath);
+        }
+    }
+
+    return plan;
+}
