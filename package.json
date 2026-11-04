@@ -3,7 +3,7 @@
   "publisher": "onurkarakus",
   "displayName": "PackageHub",
   "description": "Manage your NuGet packages in the editor. See which ones need attention, then update them in a few clicks.",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "license": "MIT",
   "author": {
     "name": "Onur Karakuş"
@@ -17,11 +17,11 @@
     "url": "https://github.com/onurkarakus/package-hub/issues"
   },
   "engines": {
-    "vscode": "^1.125.0"
+    "vscode": "^1.74.0"
   },
   "categories": [
-    "Programming Languages",
-    "Linters"
+    "Linters",
+    "Other"
   ],
   "keywords": [
     "nuget",
@@ -41,11 +41,17 @@
     "theme": "dark"
   },
   "activationEvents": [
-    "onLanguage:csharp",
-    "onLanguage:fsharp",
-    "workspaceContains:**/*.{csproj,fsproj,sln,props}"
+    "workspaceContains:**/*.{csproj,fsproj,sln,slnx}",
+    "workspaceContains:**/Directory.Packages.props"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "PackageHub runs dotnet and MSBuild, which can run code from the workspace. Trust the folder to scan it."
+    },
+    "virtualWorkspaces": false
+  },
   "contributes": {
     "commands": [
       {
@@ -192,6 +198,7 @@
               "altText": "The Package Health view after a scan, with vulnerable, outdated and deprecated packages"
             },
             "completionEvents": [
+              "onContext:packageHub.scanCompleted",
               "onCommand:packageHub.scanWorkspace"
             ]
           },
@@ -307,6 +314,36 @@
             },
             "default": [],
             "description": "%config.ignoredPackages.description%"
+          },
+          "packageHub.onlineLookups": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "%config.onlineLookups.markdownDescription%"
+          },
+          "packageHub.timeouts.listSeconds": {
+            "type": "number",
+            "default": 120,
+            "minimum": 10,
+            "description": "%config.timeouts.listSeconds.description%"
+          },
+          "packageHub.timeouts.outdatedSeconds": {
+            "type": "number",
+            "default": 300,
+            "minimum": 10,
+            "description": "%config.timeouts.outdatedSeconds.description%"
+          },
+          "packageHub.timeouts.restoreSeconds": {
+            "type": "number",
+            "default": 600,
+            "minimum": 10,
+            "description": "%config.timeouts.restoreSeconds.description%"
+          },
+          "packageHub.maxDotnetProcesses": {
+            "type": "number",
+            "default": 4,
+            "minimum": 1,
+            "maximum": 16,
+            "description": "%config.maxDotnetProcesses.description%"
           }
         }
       }
@@ -397,6 +434,36 @@
           "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@6"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "packageHub.updateVulnerable",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.updateSelectedPackage",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.showPackageInfo",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.openNugetPage",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.updateLinePatch",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+        },
+        {
+          "command": "packageHub.updateLineLatest",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+        },
+        {
+          "command": "packageHub.openLineAdvisory",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+        }
       ]
     }
   },
@@ -412,10 +479,13 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:min": "node scripts/test-min.mjs",
+    "publish:ovsx": "npx --yes ovsx publish",
+    "package:vsix": "npx --yes @vscode/vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.125.0",
+    "@types/vscode": "~1.74.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
     "typescript-eslint": "^8.61.1",

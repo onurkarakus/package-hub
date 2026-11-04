@@ -26,7 +26,7 @@
   "config.scanOnStartup.description": "Scan packages when the workspace opens.",
   "config.includePrerelease.description": "Include prereleases in the next outdated list. Off by default. The vulnerability scan is unchanged. Applied on the next scan.",
   "config.minimumSeverity.description": "Lowest severity PackageHub reports. Does not change NuGetAuditLevel in the project.",
-  "config.minimumReleaseAge.description": "How many days old a latest version must be before it is preferred. 0 is off. Highest patch ignores this.",
+  "config.minimumReleaseAge.description": "How many days old a latest version must be before it is preferred. 0 is off. Highest patch ignores this. Publish dates come from the local NuGet cache; with packageHub.onlineLookups off, a date that is not cached is reported as unknown.",
   "config.ignoredPackages.description": "Package ids to hide from scan results.",
   "welcome.noFolder": "PackageHub reads the NuGet packages in your C# and F# projects. Open a folder that contains a .csproj, .fsproj or .sln file to start.\n[Open Folder](command:vscode.openFolder)\n[Get Started](command:packageHub.openWalkthrough)",
   "welcome.noProjects": "No .csproj, .fsproj or .sln file was found in this folder. Open a .NET project or solution and PackageHub scans it for you.\n[Open Folder](command:vscode.openFolder)\n[Scan Again](command:packageHub.scanWorkspace)\n[Get Started](command:packageHub.openWalkthrough)",
@@ -45,5 +45,10 @@
   "walkthrough.settings.title": "Tune what you see",
   "walkthrough.settings.description": "Hide low severities with `packageHub.minimumSeverity`, add prereleases to the outdated list with `packageHub.includePrerelease`, or wait a few days before a new latest version is preferred with `packageHub.minimumReleaseAge`.\n[Open PackageHub Settings](command:workbench.action.openSettings?%22packageHub.%22)",
   "walkthrough.title": "Get started with PackageHub",
-  "walkthrough.description": "Find vulnerable, outdated and deprecated NuGet packages in your C# and F# projects, and update them safely."
+  "walkthrough.description": "Find vulnerable, outdated and deprecated NuGet packages in your C# and F# projects, and update them safely.",
+  "config.onlineLookups.markdownDescription": "Allow PackageHub to contact nuget.org itself when local data is missing: advisory ranges (VulnerabilityInfo) and publish dates for `#packageHub.minimumReleaseAge#`. Off by default: PackageHub then makes no network request of its own. `dotnet` still uses your NuGet.config feeds as usual.",
+  "config.timeouts.listSeconds.description": "Timeout in seconds for dotnet list package (vulnerable, installed) and other quick dotnet commands.",
+  "config.timeouts.outdatedSeconds.description": "Timeout in seconds for dotnet list package --outdated and --deprecated.",
+  "config.timeouts.restoreSeconds.description": "Timeout in seconds for dotnet restore and dotnet add package.",
+  "config.maxDotnetProcesses.description": "How many dotnet processes PackageHub runs at the same time."
 }

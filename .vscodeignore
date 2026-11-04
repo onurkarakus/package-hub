@@ -18,3 +18,4 @@ package-lock.json
 vsc-extension-quickstart.md
 *.vsix
 scripts/**
+PUBLISHING.md

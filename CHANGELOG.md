@@ -1,9 +1,16 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.0] - 2026-11-05
 
 ### Added
 
+- Local-first by default: PackageHub makes no network request of its own. Advisory ranges and publish dates are read from the NuGet cache `dotnet` already wrote. The new `packageHub.onlineLookups` setting (off by default) allows asking nuget.org when local data is missing.
+- Feed health: the tree and the dashboard list the NuGet sources `dotnet` uses, whether each is enabled, which ones failed in the last scan or restore (NU1301, NU1302, NU1801, NU1900, NU1905), and credential provider hints.
+- An update summary before every update: from and to versions, patch/minor/major, advisories closed or still open, direct or transitive, affected projects, whether a CPM file is edited, and prerelease and age warnings.
+- Pinning a transitive package asks for its own confirmation.
+- Version conflicts are found per project and target framework.
+- Settings for `dotnet` timeouts and for how many `dotnet` processes run at once.
+- `npm run test:min` runs the tests on the oldest supported VS Code. `npm run publish:ovsx` and PUBLISHING.md for Open VSX.
 - **Get Started** walkthrough with seven steps: open a .NET project, run the first scan, read the line marks, apply a safe update from the lightbulb, open Package Health and the dashboard, ask "Why is this here?", and tune `minimumSeverity`, `includePrerelease` and `minimumReleaseAge`. Open it with `PackageHub: Get Started` or from the Package Health view menu.
 - The Package Health view explains what to do when no folder is open or the folder has no `.csproj`, `.fsproj` or `.sln` file, with links to open a folder, scan again or get started. It updates when project or solution files are added or removed and when workspace folders change.
 - Manifest strings (commands, settings, views, walkthrough) moved to `package.nls.json`, ready for translations.
@@ -11,12 +18,29 @@
 
 ### Changed
 
+- Works on VS Code 1.74 and newer, so it installs in Cursor and VSCodium.
+- `dotnet` runs with an argument list and no shell. Package ids and versions are checked before any command runs.
+- `dotnet` output that cannot be read, and projects `dotnet` reports as errors, are shown as not checked instead of healthy.
+- A failed update or restore shows the exit code and the error lines and is never reported as success.
+- NuGet version order follows NuGet rules: four-part versions, prerelease labels, build metadata ignored. Ranges, floating versions and properties are not compared. Highest patch never picks a prerelease.
+- Project data comes from MSBuild evaluation when the SDK supports it, so `VersionOverride`, the nearest `Directory.Packages.props`, CPM turned on outside the props file, and `GlobalPackageReference` are handled. The file fallback ignores XML comments and reads single quotes, `Update=` and multi-line elements.
+- Updates, removes and bulk updates run one at a time. Saving a project file restores and scans once, after a short pause.
+- Projects outside any solution are scanned, and projects shared by several solutions are scanned once.
+- Warnings follow unsaved edits in open project files.
+- The dashboard uses a strict content security policy and checks every message from the page. Hover links can run only PackageHub commands, and only HTTPS advisory links are shown.
+- The status bar stays neutral in a folder with no .NET project. Any scan, including the startup scan, sets the `packageHub.scanCompleted` context key, which completes the walkthrough's "Run your first scan" step.
+- `project.assets.json` is found when `BaseIntermediateOutputPath`, `MSBuildProjectExtensionsPath` or `UseArtifactsOutput` move it.
+- The extension activates only in folders with .NET projects or solutions, and is turned off in untrusted workspaces.
 - New README with screenshots of every feature, a quick start, Central Package Management, commands, settings, privacy and FAQ sections. Images use repository paths.
-- `package.json` has `repository`, `homepage`, `bugs` and `author` fields.
 - Planning notes were removed from `docs/`, and `.DS_Store` is ignored.
+- `package.json` has `repository`, `homepage`, `bugs` and `author` fields, explicit `capabilities`, and narrower activation events and categories.
 
 ### Fixed
 
+- When `dotnet list package --highest-patch` fails ("Sequence contains no matching element"), the highest patch is worked out from the local version list instead of disappearing.
+- The deprecated table shows its own empty message.
+- Ignoring a package works from `.fsproj` files.
+- The remaining Turkish messages are in English.
 - Opening the Package Health view in a folder without a `.csproj`, `.fsproj` or `.sln` file no longer starts a scan that ends in an error. The view shows its welcome message instead.
 
 ## [0.0.4] - 2026-10-15

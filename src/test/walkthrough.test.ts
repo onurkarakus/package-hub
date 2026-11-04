@@ -29,6 +29,14 @@ suite("Get Started", () => {
         }
     });
 
+    test("the first-scan step completes on any scan, including the startup scan", () => {
+        const extension = vscode.extensions.getExtension("onurkarakus.package-hub");
+        assert.ok(extension);
+        const [walkthrough] = extension.packageJSON.contributes.walkthroughs as { steps: Step[] }[];
+        const scan = walkthrough.steps.find((step) => step.id === "packageHub.scan");
+        assert.ok(scan?.completionEvents?.includes("onContext:packageHub.scanCompleted"));
+    });
+
     test("every command link in the manifest strings is a real command", async () => {
         const extension = vscode.extensions.getExtension("onurkarakus.package-hub");
         assert.ok(extension);

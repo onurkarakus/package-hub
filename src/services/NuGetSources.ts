@@ -1,7 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import { logger } from "../utils/logger";
-import { PackageSourceState, ScanState } from "./ScanState";
+import { ScanState } from "./ScanState";
 import { WorkspaceScanner } from "./WorkspaceScanner";
 
 export interface PackageSourceFile {

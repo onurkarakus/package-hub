@@ -1,4 +1,6 @@
 import { firstFixedFromRanges, versionInsideRange } from "../utils/nugetAudit";
+import { parseVulnerabilityData, readLocalVulnerabilities } from "./NuGetLocalCache";
+import { fetchOnlineJson } from "./OnlineFetch";
 
 export type AdvisoryVerdict = "open" | "closed" | "unknown";
 
@@ -98,14 +100,34 @@ export function clearAdvisoryRecords(): void {
     records.clear();
     ready = false;
     pending = undefined;
+    catalogSource = undefined;
 }
 
-export function loadAdvisoryCatalog(): Promise<void> {
+export type AdvisoryCatalogSource = "local" | "online";
+let catalogSource: AdvisoryCatalogSource | undefined;
+
+export function advisoryCatalogSource(): AdvisoryCatalogSource | undefined {
+    return ready ? catalogSource : undefined;
+}
+
+export interface AdvisoryCatalogOptions {
+    /** The NuGet HTTP cache folder. */
+    cacheRoot?: string;
+    /** packageHub.onlineLookups. */
+    online: boolean;
+}
+
+/**
+ * Loads advisory ranges.
+ *
+ * Local first: the vulnerability data NuGet audit downloaded during restore
+ * and keeps in its HTTP cache. Only when that is missing and
+ * packageHub.onlineLookups is on does PackageHub download the same data from
+ * nuget.org itself.
+ */
+export function loadAdvisoryCatalog(options: AdvisoryCatalogOptions): Promise<void> {
     if (!pending) {
-        pending = fetchCatalog()
-            .then(() => {
-                ready = true;
-            })
+        pending = loadCatalog(options)
             .catch((error) => {
                 pending = undefined;
                 ready = false;
@@ -116,18 +138,48 @@ export function loadAdvisoryCatalog(): Promise<void> {
     return pending;
 }
 
-async function fetchCatalog(): Promise<void> {
-    const index = await fetchJson(SERVICE_INDEX);
+/**
+ * Reads the catalog again, for example after a scan restored packages.
+ * The old records stay usable until the new ones are in.
+ */
+export function refreshAdvisoryCatalog(options: AdvisoryCatalogOptions): Promise<void> {
+    pending = undefined;
+    return loadAdvisoryCatalog(options);
+}
+
+async function loadCatalog(options: AdvisoryCatalogOptions): Promise<void> {
+    const local = options.cacheRoot ? await readLocalVulnerabilities(options.cacheRoot) : [];
+    if (local.length > 0) {
+        replaceAdvisoryRecords(local);
+        catalogSource = "local";
+        return;
+    }
+
+    if (!options.online) {
+        throw new Error("No NuGet audit data in the local cache yet. Run a restore with NuGetAudit on, or turn on packageHub.onlineLookups.");
+    }
+
+    const fetched = await fetchCatalog();
+    replaceAdvisoryRecords(fetched);
+    catalogSource = "online";
+}
+
+/**
+ * Opt-in only (packageHub.onlineLookups).
+ */
+async function fetchCatalog(): Promise<{ packageId: string; url: string; versions: string }[]> {
+    const fetched: { packageId: string; url: string; versions: string }[] = [];
+    const index = await fetchOnlineJson(SERVICE_INDEX);
     const resources: any[] = Array.isArray(index?.resources) ? index.resources : [];
     const resource = resources.find((item: any) =>
         typeof item?.["@type"] === "string" && item["@type"].startsWith("VulnerabilityInfo")
     );
     const indexUrl = resource?.["@id"];
-    if (!indexUrl) {
+    if (typeof indexUrl !== "string" || !indexUrl.startsWith("https://")) {
         throw new Error("No VulnerabilityInfo source.");
     }
 
-    const pages = await fetchJson(indexUrl);
+    const pages = await fetchOnlineJson(indexUrl);
     if (!Array.isArray(pages)) {
         throw new Error("Vulnerability index is not an array.");
     }
@@ -138,42 +190,11 @@ async function fetchCatalog(): Promise<void> {
             continue;
         }
 
-        const data = await fetchJson(pageUrl);
-        if (!data || Array.isArray(data)) {
-            continue;
-        }
-
-        for (const [packageId, items] of Object.entries(data)) {
-            if (!Array.isArray(items)) {
-                continue;
-            }
-            const next: AdvisoryRecord[] = [];
-            for (const item of items as any[]) {
-                if (item && typeof item.url === "string" && typeof item.versions === "string") {
-                    next.push({ url: item.url, versions: item.versions });
-                }
-            }
-            records.set(packageId.toLowerCase(), next);
-        }
+        fetched.push(...parseVulnerabilityData(await fetchOnlineJson(pageUrl)));
     }
+    return fetched;
 }
 
-async function fetchJson(url: string): Promise<any> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
-    try {
-        const response = await fetch(url, {
-            headers: { Accept: "application/json" },
-            signal: controller.signal,
-        });
-        if (!response.ok) {
-            throw new Error(`${response.status} ${url}`);
-        }
-        return await response.json();
-    } finally {
-        clearTimeout(timer);
-    }
-}
 
 function advisoryKey(url: string): string {
     const match = url.match(/GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}/i);

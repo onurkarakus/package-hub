@@ -1,27 +1,35 @@
 import * as path from "path";
 import * as vscode from "vscode";
+import { PackageEntry, PackageInfo } from "./models/PackageInfo";
 import { DotnetCli } from "./services/DotnetCli";
 import { WorkspaceScanner } from "./services/WorkspaceScanner";
 import { logger } from "./utils/logger";
-import { CacheService } from "./services/CacheService";
 import { PackageHubTreeProvider } from "./tree/PackageHubTreeProvider";
 import { PackageHoverProvider } from "./providers/PackageHoverProvider";
 import { ScanState } from "./services/ScanState";
-import { loadAdvisoryCatalog } from "./services/AdvisoryCatalog";
-import { loadReleaseAges } from "./services/ReleaseAge";
+import { advisoryLabel, advisoryVerdict, refreshAdvisoryCatalog } from "./services/AdvisoryCatalog";
+import { latestReleasePreferred, loadReleaseAges, releaseAgeNotice } from "./services/ReleaseAge";
 import { attachTransitiveOrigins, directProjectNames } from "./services/TransitiveOrigin";
 import { refreshCentralPackages } from "./services/CentralPackages";
-import { refreshNuGetSources } from "./services/NuGetSources";
-import { workspaceHasAuditDataGap } from "./services/AuditSourceNotice";
+import { readRestoreLogs } from "./services/AuditSourceNotice";
 import { restoreLastScan, saveLastScan } from "./services/LastScanStore";
 import { buildHealthReport } from "./services/HealthReport";
 import { buildVulnerabilityReport } from "./services/VulnerabilityReport";
-import { chooseQuickFixVersions, isSafeChannelTarget, readPackageRef } from "./utils/nugetAudit";
+import {
+	chooseQuickFixVersions,
+	isSafeChannelTarget,
+	isValidPackageId,
+	isValidPackageVersion,
+	packageRefAtLine,
+	readPackageRefs,
+	versionChange,
+} from "./utils/nugetAudit";
 import { isProjectLoadFailure, projectLoadSummary } from "./services/ProjectLoadFailure";
-import { isMsBuildProject, projectNameFromPath } from "./services/projectFiles";
+import { isMsBuildProject, isPackageDocumentPath, projectNameFromPath } from "./services/projectFiles";
 import { provenProjectNames } from "./services/provenProjects";
 import {
 	classicSolutionPaths,
+	planScanTargets,
 	readSolutionProjects,
 	restoreTargetsForProjects,
 	slnxPaths,
@@ -33,12 +41,73 @@ import { PackageCodeLensProvider } from "./providers/PackageCodeLensProvider";
 import { PackageLineDecorations } from "./providers/PackageLineDecorations";
 import { HealthDashboardPanel } from "./webview/HealthDashboardPanel";
 import { DependencyGraphPanel } from "./webview/DependencyGraphPanel";
+import { aggregatePackages, emptyPackageList, PackageListResult, TargetUnreadableError } from "./services/PackageList";
+import { killAllProcesses, processSlots } from "./services/ProcessRunner";
+import { dotnetTimeouts, maxDotnetProcesses, onlineLookupsEnabled } from "./services/Settings";
+import { parseFeedFailures, recordFeedFailures, resetFeedFailures } from "./services/FeedHealth";
+import { refreshFeedSources } from "./services/FeedHealthLoader";
+import { defaultHttpCachePath, setHttpCacheRoot } from "./services/NuGetLocalCache";
+import { forgetAssetsFiles, rememberAssetsFile } from "./services/AssetsLocator";
+import { planVersionEdit, ProjectEvaluation, setPackageVersionInXml, EditPlan } from "./services/ProjectEvaluation";
+import { Debouncer, WriteQueue } from "./services/WriteQueue";
+import { buildUpdateSummary, UpdateSummaryAdvisory, UpdateSummaryProject } from "./services/UpdateSummary";
+import { highestPatchFromLocal } from "./services/PatchFallback";
 
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
 
 const PROJECT_SCAN_CONCURRENCY = 2;
 const scanGate = new ScanGate();
+const writeQueue = new WriteQueue();
+const evaluations = new Map<string, Promise<ProjectEvaluation>>();
+/** Files PackageHub saves itself. Their save does not start another scan. */
+const ownSaves = new Set<string>();
+
+function pathKey(filePath: string): string {
+	const resolved = path.resolve(filePath);
+	return process.platform === "linux" ? resolved : resolved.toLowerCase();
+}
+
+function errorText(error: any): string {
+	return error?.message || String(error);
+}
+
+/**
+ * Reads the evaluated MSBuild data for a project once per change. The cache is
+ * dropped when a project or props file changes.
+ */
+function evaluationFor(projectPath: string, signal?: AbortSignal): Promise<ProjectEvaluation> {
+	const key = pathKey(projectPath);
+	const known = evaluations.get(key);
+	if (known) {
+		return known;
+	}
+	const job = dotnetCli.evaluateProject(projectPath, signal).then((evaluation) => {
+		rememberAssetsFile(projectPath, evaluation.assetsFile);
+		return evaluation;
+	});
+	evaluations.set(key, job);
+	job.catch(() => evaluations.delete(key));
+	return job;
+}
+
+function forgetEvaluations(): void {
+	evaluations.clear();
+	forgetAssetsFiles();
+}
+
+async function resolveHttpCacheRoot(): Promise<string> {
+	const root = workspaceScanner.getWorkspaceRoot() || process.cwd();
+	try {
+		const found = await dotnetCli.localsPath("http-cache", root);
+		if (found) {
+			return found;
+		}
+	} catch (error) {
+		logger.info(`dotnet nuget locals failed. Using the default cache folder: ${errorText(error)}`);
+	}
+	return defaultHttpCachePath();
+}
 
 function escapeXml(value: string): string {
 	return value
@@ -68,10 +137,9 @@ function alreadySuppressed(text: string, url: string): boolean {
 }
 
 function fileReferencesPackage(text: string, packageId: string): boolean {
-	return text.split(/\r?\n/).some((line) => {
-		const ref = readPackageRef(line);
-		return ref?.kind === "reference" && ref.id.toLowerCase() === packageId.toLowerCase();
-	});
+	return readPackageRefs(text).some((ref) =>
+		ref.kind === "reference" && ref.id.toLowerCase() === packageId.toLowerCase()
+	);
 }
 
 async function suppressTarget(packageId: string): Promise<vscode.Uri | undefined> {
@@ -172,14 +240,19 @@ async function openSuppressDiff(packageId: string, url: string): Promise<void> {
 }
 
 interface TargetScan {
-	vulnerable: any[];
-	outdated: any[];
-	deprecated: any[];
-	patch: any[];
-	installed: any[];
+	vulnerable: PackageEntry[];
+	outdated: PackageEntry[];
+	deprecated: PackageEntry[];
+	patch: PackageEntry[];
+	installed: PackageEntry[];
 	provenProjects: string[];
+	unreadableProjects: string[];
+	/** Set when dotnet could not read the target at all. */
+	unreadable?: string;
 	loadError?: string;
 }
+
+const LIST_NAMES = ["vulnerable", "outdated", "deprecated", "patch", "installed"] as const;
 
 async function scanOneTarget(
 	cli: DotnetCli,
@@ -187,50 +260,66 @@ async function scanOneTarget(
 	label: string,
 	signal: AbortSignal
 ): Promise<TargetScan> {
+	const prerelease = ScanState.includePrerelease();
 	const settled = await Promise.allSettled([
 		cli.listVulnerableReport(targetPath, true, signal),
-		cli.listOutdatedReport(targetPath, false, "latest", signal, ScanState.includePrerelease()),
+		cli.listOutdatedReport(targetPath, false, "latest", signal, prerelease),
 		cli.listDeprecatedReport(targetPath, signal),
-		cli.listOutdatedReport(targetPath, false, "patch", signal, ScanState.includePrerelease()),
+		cli.listOutdatedReport(targetPath, false, "patch", signal, prerelease),
 		cli.listInstalled(targetPath, signal),
 	]);
 
 	if (settled.some((result) =>
 		result.status === "rejected"
-		&& String(result.reason?.message || result.reason).includes("`dotnet` was not found")
+		&& errorText(result.reason).includes("`dotnet` was not found")
 	)) {
 		throw new Error("`dotnet` was not found. Is the .NET SDK installed?");
 	}
 
-	const names = ["vulnerable", "outdated", "deprecated", "patch", "installed"] as const;
 	const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-	if (failures.length === names.length) {
-		const message = String(failures[0].reason?.message || failures[0].reason);
+	if (failures.length === LIST_NAMES.length) {
+		const message = errorText(failures[0].reason);
+		const empty: TargetScan = {
+			vulnerable: [],
+			outdated: [],
+			deprecated: [],
+			patch: [],
+			installed: [],
+			provenProjects: [],
+			unreadableProjects: [],
+		};
 		if (isProjectLoadFailure(message)) {
-			return {
-				vulnerable: [],
-				outdated: [],
-				deprecated: [],
-				patch: [],
-				installed: [],
-				provenProjects: [],
-				loadError: message,
-			};
+			return { ...empty, loadError: message };
 		}
+		return { ...empty, unreadable: message };
 	}
 
-	const reports = names.map((name, index) => {
+	const reports: PackageListResult[] = LIST_NAMES.map((name, index) => {
 		const result = settled[index];
 		if (result.status === "fulfilled") {
 			return result.value;
 		}
 
 		if (!signal.aborted) {
-			logger.error(`[${label}] could not read ${name}: ${result.reason?.message || result.reason}`);
+			const kind = result.reason instanceof TargetUnreadableError ? "unreadable" : "failed";
+			logger.error(`[${label}] ${name} list ${kind}: ${errorText(result.reason)}`);
 		}
-		return { packages: [] as any[], projects: [] as string[] };
+		return emptyPackageList();
 	});
 
+	// Some SDK builds fail on --highest-patch. Build the list from the local version cache.
+	if (settled[3].status === "rejected" && settled[1].status === "fulfilled") {
+		const fallback = await highestPatchFromLocal(reports[1].packages, prerelease);
+		reports[3] = {
+			...emptyPackageList(),
+			entries: fallback.flatMap((pkg) => (pkg.entries || []).map((entry) => ({ ...entry, latestVersion: pkg.latestVersion }))),
+		};
+		if (fallback.length > 0) {
+			logger.info(`[${label}] highest patch read from the local version list for ${fallback.length} packages.`);
+		}
+	}
+
+	const unreadableProjects = [...new Set(reports.flatMap((report) => report.unreadableProjects))];
 	const proofReady = [0, 1, 2, 4].every((index) => settled[index].status === "fulfilled");
 	const provenProjects = proofReady
 		? provenProjectNames([
@@ -238,20 +327,21 @@ async function scanOneTarget(
 			reports[0].projects,
 			reports[1].projects,
 			reports[2].projects,
-		])
+		]).filter((name) => !unreadableProjects.some((item) => item.toLowerCase() === name.toLowerCase()))
 		: [];
 
 	return {
-		vulnerable: reports[0].packages,
-		outdated: reports[1].packages,
-		deprecated: reports[2].packages,
-		patch: reports[3].packages,
-		installed: reports[4].packages,
+		vulnerable: reports[0].entries,
+		outdated: reports[1].entries,
+		deprecated: reports[2].entries,
+		patch: reports[3].entries,
+		installed: reports[4].entries,
 		provenProjects,
+		unreadableProjects,
 	};
 }
 
-function attachHighestPatch(groups: any[][], patch: any[]): void {
+function attachHighestPatch(groups: PackageInfo[][], patch: PackageInfo[]): void {
 	const byId = new Map<string, string>();
 	for (const pkg of patch) {
 		if (pkg?.id && pkg.latestVersion) {
@@ -267,25 +357,62 @@ function attachHighestPatch(groups: any[][], patch: any[]): void {
 	}
 }
 
-async function restoreForProjects(projectPaths: string[]): Promise<void> {
-	const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
-	const solutions = classicSolutionPaths(found);
-	if (projectPaths.length === 0) {
-		for (const solutionPath of solutions) {
-			await dotnetCli.restore(solutionPath);
+function dedupeEntries(entries: PackageEntry[]): PackageEntry[] {
+	const seen = new Set<string>();
+	return entries.filter((entry) => {
+		const key = [pathKey(entry.projectPath || entry.projectName), entry.framework, entry.id, entry.isTransitive ? "t" : "d"]
+			.join("\n").toLowerCase();
+		if (seen.has(key)) {
+			return false;
 		}
+		seen.add(key);
+		return true;
+	});
+}
+
+function groupByProject(entries: PackageEntry[]): Map<string, PackageEntry[]> {
+	const grouped = new Map<string, PackageEntry[]>();
+	for (const entry of entries) {
+		if (!entry.projectPath) {
+			continue;
+		}
+		const list = grouped.get(entry.projectPath) ?? [];
+		list.push(entry);
+		grouped.set(entry.projectPath, list);
+	}
+	return grouped;
+}
+
+/**
+ * Restores the solutions or projects that hold the given projects. An empty
+ * list restores nothing. Throws when any restore fails.
+ */
+async function restoreForProjects(projectPaths: string[], signal?: AbortSignal): Promise<void> {
+	if (projectPaths.length === 0) {
 		return;
 	}
 
-	const membership = await readSolutionProjects(solutions);
+	const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
+	const membership = await readSolutionProjects(classicSolutionPaths(found));
 	for (const solution of membership) {
 		if (solution.error) {
 			logger.error(`Could not read the solution (${solution.solutionPath}): ${solution.error}`);
 		}
 	}
 
+	const failures: string[] = [];
 	for (const target of restoreTargetsForProjects(membership, projectPaths)) {
-		await dotnetCli.restore(target);
+		try {
+			await dotnetCli.restore(target, signal);
+		} catch (error) {
+			if (signal?.aborted) {
+				throw error;
+			}
+			failures.push(`${path.basename(target)}: ${errorText(error)}`);
+		}
+	}
+	if (failures.length > 0) {
+		throw new Error(`Restore failed.\n${failures.join("\n")}`);
 	}
 }
 
@@ -310,6 +437,105 @@ async function runPool(
 	}));
 }
 
+function showFailure(prefix: string, error: unknown): void {
+	const message = errorText(error);
+	logger.show(true);
+	logger.error(`${prefix}: ${message}`);
+	const [first, ...rest] = message.split(/\r?\n/);
+	void vscode.window.showErrorMessage(`${prefix}: ${first}`, {
+		modal: rest.length > 0,
+		detail: rest.length > 0 ? rest.join("\n") : undefined,
+	});
+}
+
+interface WriteTarget {
+	packageId: string;
+	version: string;
+	projectPath: string;
+	projectName: string;
+}
+
+/**
+ * Writes one version for one package in one project, as planned from the
+ * MSBuild evaluation. Returns the files edited directly.
+ */
+async function applyVersionEdit(plan: EditPlan, target: WriteTarget, editedFiles: Set<string>): Promise<void> {
+	if (plan.kind === "dotnet-add") {
+		await dotnetCli.updatePackage(target.projectPath, target.packageId, target.version);
+		return;
+	}
+
+	const key = `${pathKey(plan.filePath)}\n${target.packageId.toLowerCase()}`;
+	if (editedFiles.has(key)) {
+		return;
+	}
+	const uri = vscode.Uri.file(plan.filePath);
+	const document = await vscode.workspace.openTextDocument(uri);
+	const text = document.getText();
+	const next = setPackageVersionInXml(text, plan.tag, target.packageId, plan.attribute, target.version);
+	if (next === undefined) {
+		throw new Error(`${path.basename(plan.filePath)} has no ${plan.tag} ${plan.attribute} for ${target.packageId}. Nothing was written.`);
+	}
+	const edit = new vscode.WorkspaceEdit();
+	edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(text.length)), next);
+	ownSaves.add(pathKey(plan.filePath));
+	try {
+		if (!await vscode.workspace.applyEdit(edit) || !await document.save()) {
+			throw new Error(`${path.basename(plan.filePath)} could not be written.`);
+		}
+	} finally {
+		setTimeout(() => ownSaves.delete(pathKey(plan.filePath)), 1500);
+	}
+	editedFiles.add(key);
+}
+
+/**
+ * Writes every target, then restores the touched projects. Each failure is
+ * reported with dotnet's exit code and error lines. Success is reported only
+ * for what really succeeded.
+ */
+async function writeTargets(label: string, targets: WriteTarget[], progress: vscode.Progress<{ message?: string }>): Promise<{ written: WriteTarget[]; failed: string[] }> {
+	const written: WriteTarget[] = [];
+	const failed: string[] = [];
+	const editedFiles = new Set<string>();
+	for (const target of targets) {
+		progress.report({ message: `${target.packageId} → ${target.version} (${target.projectName})` });
+		try {
+			const evaluation = await evaluationFor(target.projectPath).catch(() => undefined);
+			await applyVersionEdit(planVersionEdit(evaluation, target.projectPath, target.packageId), target, editedFiles);
+			written.push(target);
+		} catch (error) {
+			failed.push(`${target.packageId} in ${target.projectName}: ${errorText(error)}`);
+			logger.error(`${label}: ${target.packageId} in ${target.projectName} failed: ${errorText(error)}`);
+		}
+	}
+
+	forgetEvaluations();
+	if (written.length > 0) {
+		progress.report({ message: "Restore is running..." });
+		try {
+			await restoreForProjects([...new Set(written.map((target) => target.projectPath))]);
+		} catch (error) {
+			failed.push(errorText(error));
+		}
+	}
+	return { written, failed };
+}
+
+function reportWriteResult(label: string, written: number, total: number, failed: string[]): void {
+	if (failed.length === 0) {
+		void vscode.window.showInformationMessage(`${label}: updated ${written} of ${total}.`);
+		return;
+	}
+	logger.show(true);
+	void vscode.window.showErrorMessage(
+		written > 0
+			? `${label}: ${written} of ${total} written, but something failed. Nothing below was updated.`
+			: `${label} failed. Nothing was updated.`,
+		{ modal: true, detail: failed.join("\n\n") }
+	);
+}
+
 async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	const projects = await workspaceScanner.findProjects();
 	if (projects.length === 0) {
@@ -318,21 +544,12 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	}
 
 	const label = channel === "patch" ? "Highest patch" : "Highest minor";
-	const targets: {
-		packageId: string;
-		from: string;
-		to: string;
-		projectPath: string;
-		projectName: string;
-	}[] = [];
+	const targets: (WriteTarget & { from: string })[] = [];
 	let blocked = false;
+	const prerelease = ScanState.includePrerelease();
 
 	await vscode.window.withProgress(
-		{
-			location: vscode.ProgressLocation.Notification,
-			title: "PackageHub",
-			cancellable: false,
-		},
+		{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
 		async (progress) => {
 			for (const project of projects) {
 				if (blocked) {
@@ -342,35 +559,43 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 				const projectName = workspaceScanner.getProjectName(project);
 				progress.report({ message: `Reading ${label}: ${projectName}` });
 
+				let listed: PackageInfo[];
 				try {
-					const listed = await dotnetCli.listOutdated(
-						project.fsPath,
-						false,
-						channel,
-						undefined,
-						ScanState.includePrerelease()
-					);
-					for (const pkg of listed) {
-						if (!pkg.latestVersion || !isSafeChannelTarget(pkg.version, pkg.latestVersion, channel)) {
-							continue;
-						}
-
-						targets.push({
-							packageId: pkg.id,
-							from: pkg.version,
-							to: pkg.latestVersion,
-							projectPath: project.fsPath,
-							projectName,
-						});
-					}
-				} catch (error: any) {
-					const message = error.message || String(error);
-					logger.show(true);
+					listed = await dotnetCli.listOutdated(project.fsPath, false, channel, undefined, prerelease);
+				} catch (error) {
+					const message = errorText(error);
 					logger.error(`Could not read the ${label} list (${project.fsPath}): ${message}`);
 					if (message.includes("`dotnet` was not found")) {
 						blocked = true;
 						vscode.window.showErrorMessage(message);
+						return;
 					}
+					if (channel !== "patch") {
+						continue;
+					}
+					try {
+						const latest = await dotnetCli.listOutdated(project.fsPath, false, "latest", undefined, prerelease);
+						listed = await highestPatchFromLocal(latest, prerelease);
+					} catch {
+						continue;
+					}
+				}
+				for (const pkg of listed) {
+					const from = pkg.resolvedVersion || pkg.version;
+					if (!pkg.latestVersion || !isSafeChannelTarget(from, pkg.latestVersion, channel)) {
+						continue;
+					}
+					if (!isValidPackageId(pkg.id) || !isValidPackageVersion(pkg.latestVersion)) {
+						continue;
+					}
+
+					targets.push({
+						packageId: pkg.id,
+						from,
+						version: pkg.latestVersion,
+						projectPath: project.fsPath,
+						projectName,
+					});
 				}
 			}
 		}
@@ -381,17 +606,20 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	}
 
 	if (targets.length === 0) {
-		vscode.window.showInformationMessage(`No packages to update for ${label}. Major versions are not written.`);
+		vscode.window.showInformationMessage(`No packages to update for ${label}. Major versions and prereleases are not written.`);
 		return;
 	}
 
 	const preview = targets
 		.slice(0, 15)
-		.map((target) => `${target.packageId} ${target.from} → ${target.to} (${target.projectName})`);
+		.map((target) => `${target.packageId} ${target.from} → ${target.version} (${target.projectName}, ${versionChange(target.from, target.version)})`);
 	const extra = targets.length > 15 ? `\n… and ${targets.length - 15} more` : "";
 	const confirm = await vscode.window.showWarningMessage(
-		`${label}\n\n${preview.join("\n")}${extra}\n\nMajor versions are not written.`,
-		{ modal: true },
+		`${label}: ${targets.length} update${targets.length === 1 ? "" : "s"}`,
+		{
+			modal: true,
+			detail: `${preview.join("\n")}${extra}\n\nMajor versions and prereleases are not written.`,
+		},
 		"Yes, Update"
 	);
 
@@ -399,53 +627,81 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 		return;
 	}
 
-	await vscode.window.withProgress(
-		{
-			location: vscode.ProgressLocation.Notification,
-			title: "PackageHub",
-			cancellable: false,
-		},
+	await writeQueue.run(async () => vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
 		async (progress) => {
-			try {
-				for (const target of targets) {
-					progress.report({
-						message: `${target.packageId} → ${target.to} (${target.projectName})`,
-					});
-					await dotnetCli.updatePackage(target.projectPath, target.packageId, target.to);
-				}
-				logger.info(`${label}: updated ${targets.length} packages.`);
-
-				progress.report({ message: "Restore is running..." });
-				const updatedProjects = [...new Set(targets.map((target) => target.projectPath))];
-				await restoreForProjects(updatedProjects);
-
-				vscode.window.showInformationMessage(`${label}: updated ${targets.length} targets.`);
+			const { written, failed } = await writeTargets(label, targets, progress);
+			logger.info(`${label}: ${written.length} of ${targets.length} written.`);
+			reportWriteResult(label, written.length, targets.length, failed);
+			if (written.length > 0) {
 				await vscode.commands.executeCommand("packageHub.scanWorkspace");
-			} catch (error: any) {
-				const message = error.message || String(error);
-				logger.show(true);
-				logger.error(`${label} failed: ${message}`);
-				vscode.window.showErrorMessage(`Update failed: ${message}`);
 			}
 		}
-	);
+	));
 }
 
 function paintScanStatus(item: vscode.StatusBarItem): void {
 	const status = ScanState.statusBarLabel();
 	item.text = status.text;
+	item.tooltip = status.neutral
+		? "PackageHub – No .NET project was scanned. Click to open the Health Dashboard"
+		: "PackageHub – Click to open the Health Dashboard";
 	item.backgroundColor = status.healthy
 		? undefined
 		: new vscode.ThemeColor("statusBarItem.warningBackground");
 }
 
-export function activate(context: vscode.ExtensionContext) {
-	// Servisler
-	dotnetCli = new DotnetCli();
-	workspaceScanner = new WorkspaceScanner();
-	const cacheService = new CacheService();
+function activeLineRef(): ReturnType<typeof packageRefAtLine> {
+	const editor = vscode.window.activeTextEditor;
+	if (!editor) {
+		return undefined;
+	}
+	return packageRefAtLine(editor.document.getText(), editor.selection.active.line);
+}
 
-	// Status Bar
+/**
+ * Projects that hold the package, from every list of the last scan. Direct
+ * and transitive are kept apart.
+ */
+function packageProjects(packageId: string): { name: string; path?: string; relation: "direct" | "transitive"; version?: string }[] {
+	const found = ScanState.findPackage(packageId);
+	const installed = ScanState.findInstalled(packageId);
+	const raw = ScanState.getAllVulnerable().find((pkg) => pkg.id.toLowerCase() === packageId.toLowerCase());
+	const sources = [installed, raw, found.vulnerable, found.outdated, found.deprecated].filter(
+		(pkg): pkg is PackageInfo => !!pkg
+	);
+	const result = new Map<string, { name: string; path?: string; relation: "direct" | "transitive"; version?: string }>();
+	for (const pkg of sources) {
+		const direct = new Set((pkg.directProjects ?? directProjectNames(pkg)).map((name) => name.toLowerCase()));
+		for (const name of pkg.projects || []) {
+			const key = name.toLowerCase();
+			const relation = direct.has(key) ? "direct" : "transitive";
+			const known = result.get(key);
+			if (known && (known.relation === "direct" || relation === "transitive")) {
+				continue;
+			}
+			result.set(key, {
+				name,
+				path: pkg.projectPaths?.[name] ?? known?.path,
+				relation,
+				version: pkg.versionByProject?.[name] ?? known?.version ?? pkg.version,
+			});
+		}
+	}
+	return [...result.values()];
+}
+
+export function activate(context: vscode.ExtensionContext) {
+	dotnetCli = new DotnetCli(dotnetTimeouts);
+	workspaceScanner = new WorkspaceScanner();
+	processSlots.setLimit(maxDotnetProcesses());
+	context.subscriptions.push(workspaceScanner.watch());
+	context.subscriptions.push(dotnetCli.onOutput((output) => {
+		recordFeedFailures(parseFeedFailures(`${output.stdout}\n${output.stderr}`));
+	}));
+	void vscode.commands.executeCommand("setContext", "packageHub.scanCompleted", false);
+
+	// Status bar
 	const statusBarItem = vscode.window.createStatusBarItem(
 		vscode.StatusBarAlignment.Left,
 		100
@@ -455,8 +711,8 @@ export function activate(context: vscode.ExtensionContext) {
 	statusBarItem.command = "packageHub.showHealthDashboard";
 	context.subscriptions.push(statusBarItem);
 
-	// Tree View
-	const treeProvider = new PackageHubTreeProvider();
+	// Tree view
+	const treeProvider = new PackageHubTreeProvider(workspaceScanner);
 	const treeView = vscode.window.createTreeView("packageHubExplorer", {
 		treeDataProvider: treeProvider,
 		showCollapseAll: true,
@@ -504,6 +760,14 @@ export function activate(context: vscode.ExtensionContext) {
 		if (event.affectsConfiguration("packageHub.includePrerelease")) {
 			codeActionProvider.clearCache();
 		}
+
+		if (event.affectsConfiguration("packageHub.maxDotnetProcesses")) {
+			processSlots.setLimit(maxDotnetProcesses());
+		}
+
+		if (event.affectsConfiguration("packageHub.onlineLookups")) {
+			HealthDashboardPanel.refreshIfOpen();
+		}
 	}));
 
 	void refreshCentralPackages(workspaceScanner)
@@ -515,32 +779,25 @@ export function activate(context: vscode.ExtensionContext) {
 			logger.error(`Could not read CPM: ${error.message}`);
 		});
 
-	void refreshNuGetSources(workspaceScanner)
-		.then(() => {
-			HealthDashboardPanel.refreshIfOpen();
-		})
-		.catch((error: any) => {
-			logger.error(`Could not read NuGet.config: ${error.message}`);
-		});
-
 	void workspaceScanner.findProjects()
 		.then(async (projects) => {
 			void workspaceScanner.countScanTargets().then((found) =>
 				vscode.commands.executeCommand("setContext", "packageHub.hasProjects", found.targets > 0)
 			);
-			const gap = await workspaceHasAuditDataGap(projects.map((project) => project.fsPath));
-			ScanState.setAuditDataGap(gap);
+			const logs = await readRestoreLogs(projects.map((project) => project.fsPath));
+			ScanState.setAuditDataGap(logs.auditDataGap);
+			recordFeedFailures(logs.feedFailures);
 			paintScanStatus(statusBarItem);
 			HealthDashboardPanel.refreshIfOpen();
 		})
 		.catch((error: any) => {
-			logger.error(`Could not read the audit source warning: ${error.message}`);
+			logger.error(`Could not read the restore logs: ${error.message}`);
 		});
 
-	// Hover is the explanation. Update links read the lightbulb cache and do not start a new dotnet call.
+	// The hover explains. Update links read the lightbulb cache and do not start a new dotnet call.
 	const hoverProvider = vscode.languages.registerHoverProvider(
 		[
-			{ language: "xml", scheme: "file", pattern: "**/*.{csproj,fsproj,props}" }
+			{ scheme: "file", pattern: "**/*.{csproj,fsproj,props}" }
 		],
 		new PackageHoverProvider(codeActionProvider, workspaceScanner)
 	);
@@ -556,12 +813,17 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// A new or deleted project file changes what the Package Health view shows.
 	const projectWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,sln}", false, true, false);
-	projectWatcher.onDidCreate(() => treeProvider.refresh());
-	projectWatcher.onDidDelete(() => treeProvider.refresh());
+	// Clear the project cache first so the view does not read a stale list.
+	const projectsChanged = () => {
+		workspaceScanner.invalidate();
+		treeProvider.refresh();
+	};
+	projectWatcher.onDidCreate(projectsChanged);
+	projectWatcher.onDidDelete(projectsChanged);
 	context.subscriptions.push(
 		projectWatcher,
 		// Adding or removing a workspace folder changes what can be scanned without creating a file.
-		vscode.workspace.onDidChangeWorkspaceFolders(() => treeProvider.refresh())
+		vscode.workspace.onDidChangeWorkspaceFolders(projectsChanged)
 	);
 
 	const openWalkthroughCommand = vscode.commands.registerCommand(
@@ -583,114 +845,27 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// ======================
-	// Komutlar
+	// Commands
 	// ======================
 
-	function mergeById(packages: any[]): any[] {
-		const map = new Map<string, any>();
-
-		for (const p of packages) {
-			const key = p.id.toLowerCase();
-			const existing = map.get(key);
-
-			if (!existing) {
-
-				const versionByProject: Record<string, string> = {};
-
-				for (const proj of p.projects || []) {
-					versionByProject[proj] = p.version;
-				}
-
-				map.set(key, {
-					...p,
-					projects: [...(p.projects || [])],
-					versionByProject,
-					transitiveProjects: [...(p.transitiveProjects || [])],
-				});
-				continue;
-			}
-
-			for (const proj of p.projects || []) {
-				if (!existing.projects.includes(proj)) {
-					existing.projects.push(proj);
-				}
-
-				if (!existing.versionByProject) {
-					existing.versionByProject = {};
-				}
-				existing.versionByProject[proj] = p.version;
-			}
-
-			if (p.latestVersion && !existing.latestVersion) {
-				existing.latestVersion = p.latestVersion;
-			}
-
-			if (!existing.transitiveProjects) {
-				existing.transitiveProjects = [];
-			}
-			for (const project of p.transitiveProjects || []) {
-				if (!existing.transitiveProjects.includes(project)) {
-					existing.transitiveProjects.push(project);
-				}
-			}
-			if (!p.isTransitive) {
-				existing.isTransitive = false;
-			}
-		}
-
-		return Array.from(map.values());
-	}
-
-	function packageOnActiveLine(): {
-		id: string;
-		version?: string;
-		kind: "reference" | "version";
-		projectName?: string;
-		document: vscode.TextDocument;
-	} | undefined {
+	async function updateActiveLine(channel: "patch" | "latest"): Promise<void> {
 		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			return undefined;
-		}
-
-		const ref = readPackageRef(editor.document.lineAt(editor.selection.active.line).text);
-		if (!ref) {
-			return undefined;
+		const ref = activeLineRef();
+		if (!editor || !ref) {
+			vscode.window.showWarningMessage("No package was found on this line.");
+			return;
 		}
 
 		const projectName = isMsBuildProject(editor.document.fileName)
 			? workspaceScanner.getProjectName(editor.document.uri)
 			: undefined;
-		return { ...ref, projectName, document: editor.document };
-	}
-
-	function lineCurrentVersion(ref: {
-		id: string;
-		version?: string;
-		kind: "reference" | "version";
-	}): string | undefined {
 		const found = ScanState.findPackage(ref.id);
-		const usesCentral = ref.kind === "version" || !ref.version;
-		const centralVersion = ref.kind === "version"
-			? ref.version
-			: ScanState.getCentralVersion(ref.id);
-		return usesCentral
-			? centralVersion
-			: (ref.version || found.vulnerable?.version || found.outdated?.version);
-	}
-
-	async function updateActiveLine(channel: "patch" | "latest"): Promise<void> {
-		const ref = packageOnActiveLine();
-		if (!ref) {
-			vscode.window.showWarningMessage("No package was found on this line.");
-			return;
-		}
-
-		const peek = await codeActionProvider.peekUpdateTargets(
-			ref.document,
-			ref.id,
-			lineCurrentVersion(ref)
-		);
+		const current = ScanState.resolvedVersionIn(ref.id, projectName)
+			|| (ref.kind === "version" ? ref.version : undefined)
+			|| (!ref.version ? ScanState.getCentralVersion(ref.id) : ref.version)
+			|| found.vulnerable?.version
+			|| found.outdated?.version;
+		const peek = await codeActionProvider.peekUpdateTargets(editor.document, ref.id, current);
 		if (!peek.ready) {
 			vscode.window.showInformationMessage(
 				"The patch list is not ready yet. The update was not started."
@@ -709,7 +884,7 @@ export function activate(context: vscode.ExtensionContext) {
 		await vscode.commands.executeCommand("packageHub.updateVulnerable", {
 			packageId: ref.id,
 			version,
-			projectName: ref.projectName,
+			projectName,
 		});
 	}
 
@@ -723,8 +898,8 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (typeof packageId !== "string" || packageId.trim().length === 0) {
 				const editor = vscode.window.activeTextEditor;
-				const inProjectFile = !!editor && /\.(csproj|props)$/i.test(editor.document.fileName);
-				const fromLine = packageOnActiveLine()?.id;
+				const inProjectFile = !!editor && isPackageDocumentPath(editor.document.fileName);
+				const fromLine = activeLineRef()?.id;
 				if (fromLine) {
 					packageId = fromLine;
 				} else if (inProjectFile) {
@@ -759,6 +934,11 @@ export function activate(context: vscode.ExtensionContext) {
 				packageId = picked;
 			}
 
+			if (!isValidPackageId(packageId)) {
+				vscode.window.showWarningMessage("That is not a valid package id.");
+				return;
+			}
+
 			const url = advisorySuppressUrl(packageId);
 			const choice = await vscode.window.showQuickPick(
 				[
@@ -789,16 +969,17 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const config = vscode.workspace.getConfiguration("packageHub");
 			const current = config.get<string[]>("ignoredPackages", []);
+			const id = packageId;
 
-			if (current.some((id) => id.toLowerCase() === packageId.toLowerCase())) {
-				vscode.window.showInformationMessage(`${packageId} zaten ignore listesinde.`);
+			if (current.some((item) => item.toLowerCase() === id.toLowerCase())) {
+				vscode.window.showInformationMessage(`${id} is already in the ignore list.`);
 				return;
 			}
 
-			await config.update("ignoredPackages", [...current, packageId], vscode.ConfigurationTarget.Workspace);
+			await config.update("ignoredPackages", [...current, id], vscode.ConfigurationTarget.Workspace);
 
 			vscode.window.showInformationMessage(
-				`${packageId} is hidden from PackageHub lists. The build warning stays.`
+				`${id} is hidden from PackageHub lists. The build warning stays.`
 			);
 			await vscode.commands.executeCommand("packageHub.scanWorkspace");
 		}
@@ -838,67 +1019,66 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.explainSelectedPackage",
 		async () => {
 			try {
-			const editor = vscode.window.activeTextEditor;
-			if (!editor) {
-				vscode.window.showWarningMessage("No editor is open.");
-				return;
-			}
+				const editor = vscode.window.activeTextEditor;
+				if (!editor) {
+					vscode.window.showWarningMessage("No editor is open.");
+					return;
+				}
 
-			const line = editor.document.lineAt(editor.selection.active.line).text;
-			const match = line.match(/PackageReference\s+Include="([^"]+)"/i);
+				const ref = activeLineRef();
+				if (!ref) {
+					vscode.window.showWarningMessage(
+						"No PackageReference was found on this line."
+					);
+					return;
+				}
 
-			if (!match) {
-				vscode.window.showWarningMessage(
-					"No PackageReference was found on this line."
+				const packageId = ref.id;
+				const { vulnerable, outdated, deprecated } = ScanState.findPackage(packageId);
+				const info = vulnerable || outdated || deprecated;
+
+				if (!info) {
+					vscode.window.showInformationMessage(
+						`${packageId} has no known issue in the last scan (or no scan has run yet).`
+					);
+					return;
+				}
+
+				const lines = [
+					`${packageId}`,
+					info.version ? `Current: ${info.version}` : undefined,
+					info.latestVersion ? `Suggested: ${info.latestVersion}` : undefined,
+					info.severity ? `Severity: ${info.severity}` : undefined,
+					vulnerable ? "Status: Vulnerable" : undefined,
+					!vulnerable && deprecated ? "Status: Deprecated" : undefined,
+					!vulnerable && !deprecated && outdated ? "Status: Outdated" : undefined,
+					info.projects?.length ? `Projects: ${info.projects.join(", ")}` : undefined,
+				].filter(Boolean);
+
+				const buttons: string[] = [];
+				const advisory = info.advisoryUrl?.startsWith("https://") ? info.advisoryUrl : undefined;
+				if (advisory) {
+					buttons.push("Open Advisory");
+				}
+				if (info.latestVersion) {
+					buttons.push("Update");
+				}
+
+				const action = await vscode.window.showInformationMessage(
+					lines.join(" | "),
+					...buttons
 				);
-				return;
-			}
 
-			const packageId = match[1];
-			const { vulnerable, outdated, deprecated } = ScanState.findPackage(packageId);
-			const info = vulnerable || outdated || deprecated;
+				if (action === "Open Advisory" && advisory) {
+					await vscode.env.openExternal(vscode.Uri.parse(advisory));
+				}
 
-			if (!info) {
-				vscode.window.showInformationMessage(
-					`${packageId} looks healthy (or no scan has run yet).`
-				);
-				return;
-			}
-
-			const lines = [
-				`${packageId}`,
-				info.version ? `Mevcut: ${info.version}` : undefined,
-				info.latestVersion ? `Suggested: ${info.latestVersion}` : undefined,
-				info.severity ? `Severity: ${info.severity}` : undefined,
-				vulnerable ? "Durum: Vulnerable" : undefined,
-				!vulnerable && deprecated ? "Durum: Deprecated" : undefined,
-				!vulnerable && !deprecated && outdated ? "Durum: Outdated" : undefined,
-				info.projects?.length ? `Projects: ${info.projects.join(", ")}` : undefined,
-			].filter(Boolean);
-
-			const buttons: string[] = [];
-			if (info.advisoryUrl) {
-				buttons.push("Open Advisory");
-			}
-			if (info.latestVersion) {
-				buttons.push("Update");
-			}
-
-			const action = await vscode.window.showInformationMessage(
-				lines.join(" | "),
-				...buttons
-			);
-
-			if (action === "Open Advisory" && info.advisoryUrl) {
-				await vscode.env.openExternal(vscode.Uri.parse(info.advisoryUrl));
-			}
-
-			if (action === "Update") {
-				await vscode.commands.executeCommand("packageHub.updateVulnerable", {
-					packageId: info.id,
-					version: info.latestVersion,
-				});
-			}
+				if (action === "Update") {
+					await vscode.commands.executeCommand("packageHub.updateVulnerable", {
+						packageId: info.id,
+						version: info.latestVersion,
+					});
+				}
 			} catch (error: any) {
 				logger.error(`Could not explain the package: ${error?.message || error}`);
 				vscode.window.showErrorMessage("Could not explain the package.");
@@ -907,281 +1087,324 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	const performWorkspaceScan = async () => {
-			const workspaceRoot = workspaceScanner.getWorkspaceRoot();
+		const workspaceRoot = workspaceScanner.getWorkspaceRoot();
 
-			if (!workspaceRoot) {
-				vscode.window.showErrorMessage(
-					"No workspace is open. Open a folder."
-				);
-				return;
-			}
+		if (!workspaceRoot) {
+			vscode.window.showErrorMessage(
+				"No workspace is open. Open a folder."
+			);
+			return;
+		}
 
-			await vscode.window.withProgress(
-				{
-					location: vscode.ProgressLocation.Notification,
-					title: "PackageHub",
-					cancellable: true,
-				},
-				async (progress, token) => {
-					progress.report({ message: "Scanning packages..." });
+		await vscode.window.withProgress(
+			{
+				location: vscode.ProgressLocation.Notification,
+				title: "PackageHub",
+				cancellable: true,
+			},
+			async (progress, token) => {
+				progress.report({ message: "Scanning packages..." });
 
-					const abort = new AbortController();
-					const cancelSub = token.onCancellationRequested(() => abort.abort());
+				const abort = new AbortController();
+				const cancelSub = token.onCancellationRequested(() => abort.abort());
 
-					try {
-						logger.info(`Scan started: ${workspaceRoot}`);
+				try {
+					logger.info(`Scan started: ${workspaceRoot}`);
+					workspaceScanner.invalidate();
+					resetFeedFailures();
 
-						// Clear the cache on every scan.
-						cacheService.invalidateAll();
+					const skipped: string[] = [];
+					const unreadable: string[] = [];
+					const provenNames: string[] = [];
+					const unreadableProjects: string[] = [];
+					const buckets = {
+						vulnerable: [] as PackageEntry[],
+						outdated: [] as PackageEntry[],
+						deprecated: [] as PackageEntry[],
+						patch: [] as PackageEntry[],
+						installed: [] as PackageEntry[],
+					};
 
-						let vulnerable: any[] = [];
-						let outdated: any[] = [];
-						let deprecated: any[] = [];
-						let patch: any[] = [];
-						const skipped: string[] = [];
-						const provenNames: string[] = [];
-						const buckets = {
-							vulnerable: [] as any[],
-							outdated: [] as any[],
-							deprecated: [] as any[],
-							patch: [] as any[],
-							installed: [] as any[],
-						};
+					const remember = (lists: TargetScan) => {
+						buckets.vulnerable.push(...lists.vulnerable);
+						buckets.outdated.push(...lists.outdated);
+						buckets.deprecated.push(...lists.deprecated);
+						buckets.patch.push(...lists.patch);
+						buckets.installed.push(...lists.installed);
+						for (const name of lists.provenProjects) {
+							if (!provenNames.some((item) => item.toLowerCase() === name.toLowerCase())) {
+								provenNames.push(name);
+							}
+						}
+						for (const name of lists.unreadableProjects) {
+							if (!unreadableProjects.some((item) => item.toLowerCase() === name.toLowerCase())) {
+								unreadableProjects.push(name);
+							}
+						}
+					};
 
-						const remember = (lists: TargetScan) => {
-							buckets.vulnerable.push(...lists.vulnerable);
-							buckets.outdated.push(...lists.outdated);
-							buckets.deprecated.push(...lists.deprecated);
-							buckets.patch.push(...lists.patch);
-							buckets.installed.push(...lists.installed);
-							for (const name of lists.provenProjects) {
-								if (!provenNames.some((item) => item.toLowerCase() === name.toLowerCase())) {
-									provenNames.push(name);
+					const scanProjectPaths = async (projectPaths: string[]) => {
+						await runPool(projectPaths.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
+							const projectPath = projectPaths[index];
+							const label = projectNameFromPath(projectPath);
+							progress.report({ message: `${index + 1}/${projectPaths.length} ${label}` });
+							try {
+								const lists = await scanOneTarget(dotnetCli, projectPath, label, abort.signal);
+								if (lists.loadError) {
+									skipped.push(projectPath);
+									logger.info(`Skipped ${projectPath}. ${projectLoadSummary(lists.loadError)}`);
+									return;
+								}
+								if (lists.unreadable) {
+									unreadable.push(projectPath);
+									unreadableProjects.push(label);
+									logger.error(`dotnet could not read ${projectPath}: ${lists.unreadable}`);
+									return;
+								}
+
+								remember(lists);
+							} catch (projectError: any) {
+								logger.error(`Could not scan the project (${projectPath}): ${projectError.message}`);
+								if (String(projectError.message).includes("`dotnet` was not found")) {
+									abort.abort();
+									throw projectError;
 								}
 							}
-						};
+						});
+					};
 
-						const scanProjectPaths = async (projectPaths: string[]) => {
-							await runPool(projectPaths.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
-								const projectPath = projectPaths[index];
-								const label = projectNameFromPath(projectPath);
-								progress.report({ message: `${index + 1}/${projectPaths.length} ${label}` });
-								try {
-									const lists = await scanOneTarget(
-										dotnetCli,
-										projectPath,
-										label,
-										abort.signal
-									);
-									if (lists.loadError) {
-										skipped.push(projectPath);
-										logger.info(`Skipped ${projectPath}. ${projectLoadSummary(lists.loadError)}`);
-										return;
-									}
+					const foundSolutions = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
+					for (const slnx of slnxPaths(foundSolutions)) {
+						logger.info(`.slnx is not scanned as one target. Its projects are scanned one by one: ${slnx}`);
+					}
+					const solutionMembership = await readSolutionProjects(classicSolutionPaths(foundSolutions));
+					const allProjects = (await workspaceScanner.findProjects()).map((project) => project.fsPath);
+					const plan = planScanTargets(solutionMembership, allProjects);
+					for (const solution of plan.skippedSolutions) {
+						logger.info(`Skipped ${path.basename(solution)}: another solution already covers its projects.`);
+					}
 
-									remember(lists);
-								} catch (projectError: any) {
-									logger.error(`Could not scan the project (${projectPath}): ${projectError.message}`);
-									if (String(projectError.message).includes("`dotnet` was not found")) {
-										abort.abort();
-										throw projectError;
-									}
-								}
-							});
-						};
+					if (token.isCancellationRequested) {
+						logger.info("Scan cancelled. Results were not drawn.");
+						return;
+					}
 
-						const foundSolutions = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
-						for (const slnx of slnxPaths(foundSolutions)) {
-							logger.info(`.slnx skipped: ${slnx}`);
-						}
-						const solutions = classicSolutionPaths(foundSolutions);
+					if (plan.solutions.length === 0 && plan.projects.length === 0) {
+						void vscode.commands.executeCommand("setContext", "packageHub.hasProjects", false);
+						ScanState.setResults([], [], [], undefined, [], []);
+						paintScanStatus(statusBarItem);
+						treeProvider.refresh();
+						vscode.window.showErrorMessage(
+							"No .sln, .csproj, or .fsproj file was found in the workspace."
+						);
+						return;
+					}
+					void vscode.commands.executeCommand("setContext", "packageHub.hasProjects", true);
 
-						if (token.isCancellationRequested) {
-							logger.info("Scan cancelled. Results were not drawn.");
-							return;
-						}
+					await runPool(plan.solutions.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
+						const targetPath = plan.solutions[index];
+						const label = path.basename(targetPath);
+						progress.report({ message: `${index + 1}/${plan.solutions.length} ${label}` });
 
-						if (solutions.length > 0) {
-							await runPool(solutions.length, PROJECT_SCAN_CONCURRENCY, token, async (index) => {
-								const targetPath = solutions[index];
-								const label = path.basename(targetPath);
-								progress.report({ message: `${index + 1}/${solutions.length} ${label}` });
-
-								try {
-									const lists = await scanOneTarget(
-										dotnetCli,
-										targetPath,
-										label,
-										abort.signal
-									);
-									if (!lists.loadError) {
-										remember(lists);
-										return;
-									}
-
-									logger.info(`The solution could not be loaded in one pass. Scanning its projects: ${targetPath}`);
-									const projects = (await readSolutionProjects([targetPath]))[0]?.projects ?? [];
-									if (projects.length === 0) {
-										logger.error(`Could not scan the solution (${targetPath}): ${projectLoadSummary(lists.loadError)}`);
-										return;
-									}
-
-									await scanProjectPaths(projects);
-								} catch (solutionError: any) {
-									logger.error(`Could not scan the solution (${targetPath}): ${solutionError.message}`);
-									if (String(solutionError.message).includes("`dotnet` was not found")) {
-										abort.abort();
-										throw solutionError;
-									}
-								}
-							});
-						} else {
-							// 2. When there is no solution, scan every project.
-							const projects = await workspaceScanner.findProjects();
-
-							if (projects.length === 0) {
-								vscode.window.showErrorMessage(
-									"No .sln, .csproj, or .fsproj file was found in the workspace."
-								);
+						try {
+							const lists = await scanOneTarget(dotnetCli, targetPath, label, abort.signal);
+							if (!lists.loadError && !lists.unreadable) {
+								remember(lists);
 								return;
 							}
 
-							await scanProjectPaths(projects.map((project) => project.fsPath));
+							logger.info(`The solution could not be read in one pass. Scanning its projects: ${targetPath}`);
+							const projects = solutionMembership.find((item) => item.solutionPath === targetPath)?.projects ?? [];
+							if (projects.length === 0) {
+								logger.error(`Could not scan the solution (${targetPath}): ${projectLoadSummary(lists.loadError || lists.unreadable || "")}`);
+								return;
+							}
+
+							await scanProjectPaths(projects);
+						} catch (solutionError: any) {
+							logger.error(`Could not scan the solution (${targetPath}): ${solutionError.message}`);
+							if (String(solutionError.message).includes("`dotnet` was not found")) {
+								abort.abort();
+								throw solutionError;
+							}
 						}
+					});
 
-						vulnerable = mergeById(buckets.vulnerable);
-						outdated = mergeById(buckets.outdated);
-						deprecated = mergeById(buckets.deprecated);
-						patch = mergeById(buckets.patch);
+					await scanProjectPaths(plan.projects);
 
-						if (skipped.length > 0) {
-							const names = skipped.slice(0, 3).map((item) => projectNameFromPath(item));
-							const extra = skipped.length > 3 ? ` and ${skipped.length - 3} more` : "";
-							vscode.window.showWarningMessage(
-								`PackageHub skipped ${skipped.length} project${skipped.length === 1 ? "" : "s"} that dotnet could not load: ${names.join(", ")}${extra}. The other projects were scanned.`
-							);
-						}
-
-						if (token.isCancellationRequested) {
-							logger.info("Scan cancelled. Results were not drawn.");
-							return;
-						}
-
-						const ignored = (
-							vscode.workspace
-								.getConfiguration("packageHub")
-								.get<string[]>("ignoredPackages") || []
-						).map((id) => id.toLowerCase());
-
-						attachHighestPatch([vulnerable, outdated], patch);
-						vulnerable = vulnerable.filter((p) => !ignored.includes(p.id.toLowerCase()));
-						outdated = outdated.filter((p) => !ignored.includes(p.id.toLowerCase()));
-						deprecated = deprecated.filter((p) => !ignored.includes(p.id.toLowerCase()));
-						const installed = mergeById(buckets.installed)
-							.filter((pkg) => !ignored.includes(pkg.id.toLowerCase()));
-
-						try {
-							const projectFiles = await workspaceScanner.findProjects();
-							await attachTransitiveOrigins(
-								vulnerable,
-								projectFiles.map((project) => ({
-									name: workspaceScanner.getProjectName(project),
-									path: project.fsPath,
-								}))
-							);
-						} catch (originError: any) {
-							logger.error(`Could not read the transitive parent: ${originError.message}`);
-						}
-
-						ScanState.setResults(
-							vulnerable,
-							outdated,
-							deprecated,
-							undefined,
-							installed,
-							provenNames
-						);
-
-						try {
-							await loadAdvisoryCatalog();
-						} catch (advisoryError: any) {
-							logger.error(`Could not read the advisory record: ${advisoryError.message}`);
-						}
-
-						try {
-							await loadReleaseAges();
-						} catch (ageError: any) {
-							logger.error(`Could not read the release-age record: ${ageError.message}`);
-						}
-
-						treeProvider.refresh();
-
-						try {
-							await refreshCentralPackages(workspaceScanner);
-						} catch (cpmError: any) {
-							logger.error(`Could not read CPM: ${cpmError.message}`);
-						}
-
-						try {
-							await refreshNuGetSources(workspaceScanner);
-						} catch (sourceError: any) {
-							logger.error(`Could not read NuGet.config: ${sourceError.message}`);
-						}
-
-						try {
-							const noticed = await workspaceScanner.findProjects();
-							const gap = await workspaceHasAuditDataGap(noticed.map((project) => project.fsPath));
-							ScanState.setAuditDataGap(gap);
-						} catch (auditNoticeError: any) {
-							logger.error(`Could not read the audit source warning: ${auditNoticeError.message}`);
-						}
-
-						paintScanStatus(statusBarItem);
-
-						try {
-							await saveLastScan(context.workspaceState);
-						} catch (saveError: any) {
-							logger.error(`Could not save the last scan: ${saveError.message}`);
-						}
-
-						const message = `Scan finished → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}, Deprecated: ${deprecated.length}`;
-						vscode.window.showInformationMessage(message);
-						logger.info(message);
-
-						// Update Dashboard If Open
-						HealthDashboardPanel.refreshIfOpen();
-
-						codeActionProvider.clearCache();
-						codeLensProvider.refresh();
-						lineDecorations.refresh();
-						try {
-							await auditDiagnostics.refresh();
-							void codeActionProvider.prefetch(auditDiagnostics.affectedProjects())
-								.finally(() => {
-									codeLensProvider.refresh();
-									lineDecorations.refresh();
-								});
-						} catch (diagError: any) {
-							logger.error(`Quick Fix diagnostic error: ${diagError.message}`);
-						}
-
-						DependencyGraphPanel.refreshIfOpen();
-					} catch (error: any) {
-						if (token.isCancellationRequested) {
-							logger.info("Scan cancelled. Results were not drawn.");
-							return;
-						}
-
-						const errorMessage = error.message || String(error);
-						logger.error(`Scan error: ${errorMessage}`);
-						vscode.window.showErrorMessage(
-							`PackageHub scan error: ${errorMessage}`
-						);
-					} finally {
-						cancelSub.dispose();
+					if (token.isCancellationRequested) {
+						logger.info("Scan cancelled. Results were not drawn.");
+						return;
 					}
+
+					const vulnerableEntries = dedupeEntries(buckets.vulnerable);
+					const outdatedEntries = dedupeEntries(buckets.outdated);
+					const patchEntries = dedupeEntries(buckets.patch);
+					let vulnerable = aggregatePackages(vulnerableEntries, "vulnerable");
+					let outdated = aggregatePackages(outdatedEntries, "outdated");
+					let deprecated = aggregatePackages(dedupeEntries(buckets.deprecated), "deprecated");
+					const patch = aggregatePackages(patchEntries, "outdated");
+
+					if (skipped.length > 0) {
+						const names = skipped.slice(0, 3).map((item) => projectNameFromPath(item));
+						const extra = skipped.length > 3 ? ` and ${skipped.length - 3} more` : "";
+						vscode.window.showWarningMessage(
+							`PackageHub skipped ${skipped.length} project${skipped.length === 1 ? "" : "s"} that dotnet could not load: ${names.join(", ")}${extra}. The other projects were scanned.`
+						);
+					}
+					if (unreadable.length > 0) {
+						const names = unreadable.slice(0, 3).map((item) => projectNameFromPath(item));
+						vscode.window.showWarningMessage(
+							`dotnet could not read ${names.join(", ")}${unreadable.length > 3 ? ` and ${unreadable.length - 3} more` : ""}. Those projects are not marked healthy. Run Restore All and see the Output panel.`
+						);
+					}
+
+					const ignored = (
+						vscode.workspace
+							.getConfiguration("packageHub")
+							.get<string[]>("ignoredPackages") || []
+					).map((id) => id.toLowerCase());
+
+					attachHighestPatch([vulnerable, outdated], patch);
+					vulnerable = vulnerable.filter((p) => !ignored.includes(p.id.toLowerCase()));
+					outdated = outdated.filter((p) => !ignored.includes(p.id.toLowerCase()));
+					deprecated = deprecated.filter((p) => !ignored.includes(p.id.toLowerCase()));
+					const installed = aggregatePackages(dedupeEntries(buckets.installed), "installed")
+						.filter((pkg) => !ignored.includes(pkg.id.toLowerCase()));
+
+					try {
+						const projectFiles = await workspaceScanner.findProjects();
+						await attachTransitiveOrigins(
+							vulnerable,
+							projectFiles.map((project) => ({
+								name: workspaceScanner.getProjectName(project),
+								path: project.fsPath,
+							}))
+						);
+					} catch (originError: any) {
+						logger.error(`Could not read the transitive parent: ${originError.message}`);
+					}
+
+					ScanState.setResults(
+						vulnerable,
+						outdated,
+						deprecated,
+						undefined,
+						installed,
+						provenNames
+					);
+					ScanState.setUnreadableProjects(unreadableProjects);
+
+					// Local data first. No request leaves this machine unless packageHub.onlineLookups is on.
+					const cacheRoot = await resolveHttpCacheRoot();
+					setHttpCacheRoot(cacheRoot);
+					try {
+						await refreshAdvisoryCatalog({ cacheRoot, online: onlineLookupsEnabled() });
+					} catch (advisoryError: any) {
+						logger.info(`Advisory ranges were not loaded: ${advisoryError.message}`);
+					}
+
+					try {
+						await loadReleaseAges(cacheRoot);
+					} catch (ageError: any) {
+						logger.error(`Could not read the publish dates: ${ageError.message}`);
+					}
+
+					treeProvider.refresh();
+
+					const projectEvaluations: ProjectEvaluation[] = [];
+					for (const projectPath of allProjects) {
+						try {
+							projectEvaluations.push(await evaluationFor(projectPath, abort.signal));
+						} catch (evaluationError: any) {
+							if (abort.signal.aborted) {
+								throw evaluationError;
+							}
+							logger.info(`Could not evaluate ${path.basename(projectPath)}: ${evaluationError.message}`);
+						}
+					}
+
+					try {
+						await refreshCentralPackages(workspaceScanner, projectEvaluations);
+					} catch (cpmError: any) {
+						logger.error(`Could not read CPM: ${cpmError.message}`);
+					}
+
+					try {
+						await refreshFeedSources(dotnetCli, workspaceScanner);
+					} catch (sourceError: any) {
+						logger.error(`Could not read the package sources: ${sourceError.message}`);
+					}
+
+					try {
+						const logs = await readRestoreLogs(allProjects);
+						ScanState.setAuditDataGap(logs.auditDataGap);
+						recordFeedFailures(logs.feedFailures);
+					} catch (logError: any) {
+						logger.error(`Could not read the restore logs: ${logError.message}`);
+					}
+
+					paintScanStatus(statusBarItem);
+
+					try {
+						await saveLastScan(context.workspaceState);
+					} catch (saveError: any) {
+						logger.error(`Could not save the last scan: ${saveError.message}`);
+					}
+
+					const message = `Scan finished → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}, Deprecated: ${deprecated.length}`;
+					vscode.window.showInformationMessage(message);
+					logger.info(message);
+					void vscode.commands.executeCommand("setContext", "packageHub.scanCompleted", true);
+
+					HealthDashboardPanel.refreshIfOpen();
+					treeProvider.refresh();
+
+					codeActionProvider.clearCache();
+					const patchByProject = groupByProject(patchEntries);
+					for (const [projectPath, entries] of groupByProject(outdatedEntries)) {
+						codeActionProvider.seed(
+							projectPath,
+							aggregatePackages(patchByProject.get(projectPath) ?? [], "outdated"),
+							aggregatePackages(entries, "outdated"),
+							false
+						);
+					}
+					const transitiveVulnerable = new Set(
+						vulnerableEntries.filter((entry) => entry.isTransitive).map((entry) => pathKey(entry.projectPath))
+					);
+					codeLensProvider.refresh();
+					lineDecorations.refresh();
+					try {
+						await auditDiagnostics.refresh();
+						void codeActionProvider.prefetch(
+							auditDiagnostics.affectedProjects(),
+							(projectPath) => transitiveVulnerable.has(pathKey(projectPath))
+						).finally(() => {
+							codeLensProvider.refresh();
+							lineDecorations.refresh();
+						});
+					} catch (diagError: any) {
+						logger.error(`Quick Fix diagnostic error: ${diagError.message}`);
+					}
+
+					DependencyGraphPanel.refreshIfOpen();
+				} catch (error: any) {
+					if (token.isCancellationRequested) {
+						logger.info("Scan cancelled. Results were not drawn.");
+						return;
+					}
+
+					const errorMessage = error.message || String(error);
+					logger.error(`Scan error: ${errorMessage}`);
+					vscode.window.showErrorMessage(
+						`PackageHub scan error: ${errorMessage}`
+					);
+				} finally {
+					cancelSub.dispose();
 				}
-			);
+			}
+		);
 	};
 
 	const scanCommand = vscode.commands.registerCommand(
@@ -1204,55 +1427,50 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const updateCommand = vscode.commands.registerCommand(
 		"packageHub.updateVulnerable",
-		async (args?: { packageId: string; version: string; projectName?: string }) => {
-			if (!args || !args.packageId) {
-				vscode.window.showWarningMessage("The package update details are missing.");
+		async (args?: { packageId?: unknown; version?: unknown; projectName?: unknown }) => {
+			const packageId = args?.packageId;
+			if (!isValidPackageId(packageId)) {
+				vscode.window.showWarningMessage("The package update details are missing or invalid.");
 				return;
 			}
+			const version = typeof args?.version === "string" && args.version ? args.version : undefined;
+			if (version !== undefined && !isValidPackageVersion(version)) {
+				vscode.window.showWarningMessage(`"${version}" is not an exact NuGet version. The update was not started.`);
+				return;
+			}
+			const projectName = typeof args?.projectName === "string" ? args.projectName : undefined;
 
-			const packageId = args.packageId;
-			const version = args.version;
-
-			const { outdated, vulnerable, deprecated } = ScanState.findPackage(packageId);
-			const relatedProjectNames =
-				outdated?.projects ||
-				vulnerable?.projects ||
-				deprecated?.projects ||
-				[];
+			// Every project the scan saw this package in, from all lists.
+			let related = packageProjects(packageId);
+			if (projectName) {
+				related = related.filter((item) => item.name.toLowerCase() === projectName.toLowerCase());
+			}
 
 			const allProjects = await workspaceScanner.findProjects();
+			const resolveUri = (item: { name: string; path?: string }) =>
+				allProjects.find((project) => item.path
+					? pathKey(project.fsPath) === pathKey(item.path)
+					: workspaceScanner.getProjectName(project).toLowerCase() === item.name.toLowerCase());
+			const targets = related
+				.map((item) => ({ ...item, uri: resolveUri(item) }))
+				.filter((item): item is typeof item & { uri: vscode.Uri } => !!item.uri);
 
-			const targetProjects = allProjects.filter((p) => {
-				const name = workspaceScanner.getProjectName(p);
-				return relatedProjectNames.includes(name);
-			});
-
-			if (targetProjects.length === 0) {
-				vscode.window.showErrorMessage(
-					`Could not match a project for ${packageId}. It was not added to every project.`
+			if (targets.length === 0) {
+				vscode.window.showWarningMessage(
+					`No project was matched for ${packageId}. Nothing was updated, and no restore was run.`
 				);
 				logger.error(`Update cancelled: no matching project → ${packageId}`);
 				return;
 			}
 
-			let projectsToUpdate = targetProjects;
-
-			if (args.projectName) {
-				projectsToUpdate = targetProjects.filter(
-					(p) => workspaceScanner.getProjectName(p) === args.projectName
-				);
-			}
-
-			const projectNames = projectsToUpdate
-				.map((p) => workspaceScanner.getProjectName(p))
-				.join(", ");
-
 			if (!version) {
 				const cont = await vscode.window.showWarningMessage(
-					`No newer version was suggested for ${packageId}.\n\nA newer version may not exist under the same package id (for example xunit → xunit.v3).\nRun "dotnet add package ${packageId}" anyway?`,
-					{ modal: true },
-					"Try anyway",
-					"Cancel"
+					`No newer version was suggested for ${packageId}.`,
+					{
+						modal: true,
+						detail: `A newer version may not exist under the same package id (for example xunit → xunit.v3).\nRun "dotnet add package ${packageId}" anyway?`,
+					},
+					"Try anyway"
 				);
 
 				if (cont !== "Try anyway") {
@@ -1260,62 +1478,108 @@ export function activate(context: vscode.ExtensionContext) {
 				}
 			}
 
-			const currentVersion = vulnerable?.version || outdated?.version;
-			const heading = currentVersion
-				? `${packageId} ${currentVersion} → ${version}`
-				: `${packageId} → ${version}`;
+			const found = ScanState.findPackage(packageId);
+			const vulnerable = found.vulnerable;
+			const advisories: UpdateSummaryAdvisory[] = [];
+			if (vulnerable && version) {
+				for (const url of vulnerable.advisoryUrls?.length ? vulnerable.advisoryUrls : vulnerable.advisoryUrl ? [vulnerable.advisoryUrl] : []) {
+					advisories.push({ url, label: advisoryLabel(url), verdict: advisoryVerdict(packageId, url, version) });
+				}
+			}
+			const plans: EditPlan[] = [];
+			for (const target of targets) {
+				const evaluation = await evaluationFor(target.uri.fsPath).catch(() => undefined);
+				plans.push(planVersionEdit(evaluation, target.uri.fsPath, packageId));
+			}
+			const centralFiles = [...new Set(plans
+				.filter((plan): plan is Extract<EditPlan, { kind: "xml-edit" }> => plan.kind === "xml-edit")
+				.map((plan) => vscode.workspace.asRelativePath(plan.filePath)))];
+			const summaryProjects: UpdateSummaryProject[] = targets.map((target) => ({
+				name: target.name,
+				fromVersion: ScanState.resolvedVersionIn(packageId, target.name) || target.version,
+				relation: target.relation,
+			}));
+			const summary = buildUpdateSummary({
+				packageId,
+				targetVersion: version,
+				projects: summaryProjects,
+				advisories,
+				centralFiles,
+				usesCentralPackageManagement: ScanState.getCpm(),
+				releaseAgeNotice: version ? releaseAgeNotice(packageId, version) : undefined,
+				youngerThanAgeGate: version ? !latestReleasePreferred(packageId, version) : false,
+			});
+
 			const confirm = await vscode.window.showWarningMessage(
-				`${heading}\n\nProjects to update:\n${projectNames}`,
-				{ modal: true },
+				summary.heading,
+				{ modal: true, detail: summary.lines.join("\n") },
 				"Yes, Update"
 			);
-
 			if (confirm !== "Yes, Update") {
 				return;
 			}
 
-			await vscode.window.withProgress(
-				{
-					location: vscode.ProgressLocation.Notification,
-					title: "PackageHub",
-					cancellable: false,
-				},
+			const transitive = targets.filter((target) => target.relation === "transitive");
+			if (transitive.length > 0) {
+				const pin = await vscode.window.showWarningMessage(
+					`Pin transitive ${packageId}?`,
+					{
+						modal: true,
+						detail: `${packageId} is not referenced directly in ${transitive.map((target) => target.name).join(", ")}. `
+							+ `PackageHub will add a direct PackageReference${version ? ` at ${version}` : ""} there. `
+							+ "That pin stays after the parent package changes, until you remove it.",
+					},
+					"Yes, Pin"
+				);
+				if (pin !== "Yes, Pin") {
+					return;
+				}
+			}
+
+			await writeQueue.run(async () => vscode.window.withProgress(
+				{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
 				async (progress) => {
-					try {
-						for (const project of projectsToUpdate) {
-							progress.report({
-								message: `${packageId} updating → ${workspaceScanner.getProjectName(project)}`,
-							});
-
-							await dotnetCli.updatePackage(project.fsPath, packageId, version);
+					const writeTargetsList: WriteTarget[] = targets.map((target) => ({
+						packageId,
+						version: version ?? "",
+						projectPath: target.uri.fsPath,
+						projectName: target.name,
+					}));
+					if (!version) {
+						const failed: string[] = [];
+						let written = 0;
+						for (const target of writeTargetsList) {
+							progress.report({ message: `${packageId} → latest (${target.projectName})` });
+							try {
+								await dotnetCli.updatePackage(target.projectPath, packageId);
+								written += 1;
+							} catch (error) {
+								failed.push(`${target.projectName}: ${errorText(error)}`);
+							}
 						}
-						logger.info(`Updated ${packageId} → ${version} in ${projectsToUpdate.length} projects.`);
-
-						// Restore
-						progress.report({ message: "Restore is running..." });
-
-						try {
-							await restoreForProjects(projectsToUpdate.map((project) => project.fsPath));
-							logger.info("Restore finished.");
-						} catch (restoreError: any) {
-							logger.error(`Restore error: ${restoreError.message}`);
-							vscode.window.showWarningMessage(
-								`The package was updated, but restore failed: ${restoreError.message}`
-							);
+						forgetEvaluations();
+						if (written > 0) {
+							try {
+								await restoreForProjects(writeTargetsList.map((target) => target.projectPath));
+							} catch (error) {
+								failed.push(errorText(error));
+							}
 						}
+						reportWriteResult(`${packageId}`, written, writeTargetsList.length, failed);
+						if (written > 0) {
+							await vscode.commands.executeCommand("packageHub.scanWorkspace");
+						}
+						return;
+					}
 
-						vscode.window.showInformationMessage(
-							`${packageId} → ${version} updated in ${projectsToUpdate.length} projects.`
-						);
-
+					const { written, failed } = await writeTargets(`${packageId} → ${version}`, writeTargetsList, progress);
+					logger.info(`${packageId} → ${version}: ${written.length} of ${writeTargetsList.length} written.`);
+					reportWriteResult(`${packageId} → ${version}`, written.length, writeTargetsList.length, failed);
+					if (written.length > 0) {
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
-					} catch (error: any) {
-						const msg = error.message || String(error);
-						logger.error(`Update error: ${msg}`);
-						vscode.window.showErrorMessage(`Update failed: ${msg}`);
 					}
 				}
-			);
+			));
 		}
 	);
 
@@ -1339,13 +1603,15 @@ export function activate(context: vscode.ExtensionContext) {
 			const editor = vscode.window.activeTextEditor;
 			const editorIsProject = !!editor && isMsBuildProject(editor.document.fileName);
 			if (!packageId && editor) {
-				packageId = readPackageRef(
-					editor.document.lineAt(editor.selection.active.line).text
-				)?.id || "";
+				packageId = activeLineRef()?.id || "";
 			}
 
 			if (!packageId) {
 				vscode.window.showWarningMessage("No package was found on this line.");
+				return;
+			}
+			if (!isValidPackageId(packageId)) {
+				vscode.window.showWarningMessage("That is not a valid package id. Removal was not started.");
 				return;
 			}
 
@@ -1360,18 +1626,12 @@ export function activate(context: vscode.ExtensionContext) {
 				const active = allProjects.find((project) => project.fsPath === editor.document.uri.fsPath);
 				targets = active ? [active] : [editor.document.uri];
 			} else {
-				const found = ScanState.findPackage(packageId);
-				const names = new Set(
-					[
-						...(found.vulnerable?.projects || []),
-						...(found.outdated?.projects || []),
-						...(found.deprecated?.projects || []),
-					].map((name) => name.toLowerCase())
+				const direct = new Set(packageProjects(packageId)
+					.filter((item) => item.relation === "direct")
+					.map((item) => item.name.toLowerCase()));
+				targets = allProjects.filter((project) =>
+					direct.has(workspaceScanner.getProjectName(project).toLowerCase())
 				);
-				const matched = allProjects.filter((project) =>
-					names.has(workspaceScanner.getProjectName(project).toLowerCase())
-				);
-				targets = matched;
 			}
 
 			if (targets.length === 0) {
@@ -1385,45 +1645,46 @@ export function activate(context: vscode.ExtensionContext) {
 				.map((project) => workspaceScanner.getProjectName(project))
 				.join("\n");
 			const confirm = await vscode.window.showWarningMessage(
-				`Remove ${packageId}?\n\n${projectNames}`,
-				{ modal: true },
+				`Remove ${packageId}?`,
+				{ modal: true, detail: projectNames },
 				"Yes, Remove"
 			);
 			if (confirm !== "Yes, Remove") {
 				return;
 			}
 
-			await vscode.window.withProgress(
-				{
-					location: vscode.ProgressLocation.Notification,
-					title: "PackageHub",
-					cancellable: false,
-				},
+			await writeQueue.run(async () => vscode.window.withProgress(
+				{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
 				async (progress) => {
 					let removed = 0;
-					try {
-						for (const project of targets) {
-							progress.report({
-								message: `${packageId} removing → ${workspaceScanner.getProjectName(project)}`,
-							});
+					const failed: string[] = [];
+					for (const project of targets) {
+						progress.report({
+							message: `${packageId} removing → ${workspaceScanner.getProjectName(project)}`,
+						});
+						try {
 							await dotnetCli.removePackage(project.fsPath, packageId);
 							removed += 1;
-						}
-						logger.info(`Removed ${packageId} from ${removed} projects.`);
-
-						vscode.window.showInformationMessage(`${packageId} was removed.`);
-						await vscode.commands.executeCommand("packageHub.scanWorkspace");
-					} catch (error: any) {
-						const msg = error.message || String(error);
-						logger.show(true);
-						logger.error(`Remove error: ${msg}`);
-						vscode.window.showErrorMessage(`Remove failed: ${msg}`);
-						if (removed > 0) {
-							await vscode.commands.executeCommand("packageHub.scanWorkspace");
+						} catch (error) {
+							failed.push(`${workspaceScanner.getProjectName(project)}: ${errorText(error)}`);
 						}
 					}
+					forgetEvaluations();
+					logger.info(`Removed ${packageId} from ${removed} of ${targets.length} projects.`);
+					if (failed.length === 0) {
+						vscode.window.showInformationMessage(`${packageId} was removed.`);
+					} else {
+						logger.show(true);
+						vscode.window.showErrorMessage(
+							`Remove failed for ${failed.length} of ${targets.length} projects.`,
+							{ modal: true, detail: failed.join("\n\n") }
+						);
+					}
+					if (removed > 0) {
+						await vscode.commands.executeCommand("packageHub.scanWorkspace");
+					}
 				}
-			);
+			));
 		}
 	);
 
@@ -1440,7 +1701,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const openLineAdvisoryCommand = vscode.commands.registerCommand(
 		"packageHub.openLineAdvisory",
 		async () => {
-			const ref = packageOnActiveLine();
+			const ref = activeLineRef();
 			if (!ref) {
 				vscode.window.showWarningMessage("No package was found on this line.");
 				return;
@@ -1448,7 +1709,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			const url = advisorySuppressUrl(ref.id);
 			if (!url) {
-				vscode.window.showWarningMessage("No advisory link. The update was not started.");
+				vscode.window.showWarningMessage("No advisory link for this package.");
 				return;
 			}
 
@@ -1530,12 +1791,12 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			const { vulnerable, outdated, deprecated } = ScanState.findPackage(item.packageId);
-			const info = vulnerable || outdated || deprecated;
+			const info = vulnerable || outdated || deprecated || ScanState.findInstalled(item.packageId);
 			const version = info?.version || (typeof item.version === "string" ? item.version : undefined);
 
 			const lines = [
 				`Package: ${item.packageId}`,
-				version ? `Mevcut: ${version}` : undefined,
+				version ? `Current: ${version}` : undefined,
 				info?.latestVersion ? `Latest version: ${info.latestVersion}` : undefined,
 				info?.severity ? `Severity: ${info.severity}` : undefined,
 				info?.projects?.length ? `Projects: ${info.projects.join(", ")}` : undefined,
@@ -1548,12 +1809,13 @@ export function activate(context: vscode.ExtensionContext) {
 	const openNugetCommand = vscode.commands.registerCommand(
 		"packageHub.openNugetPage",
 		async (item?: any) => {
-			if (!item?.packageId) {
+			if (!isValidPackageId(item?.packageId)) {
 				vscode.window.showWarningMessage("Could not select a package.");
 				return;
 			}
 
-			const url = vscode.Uri.parse(`https://www.nuget.org/packages/${item.packageId}`);
+			// Opens the browser. PackageHub itself does not fetch the page.
+			const url = vscode.Uri.parse(`https://www.nuget.org/packages/${encodeURIComponent(item.packageId)}`);
 			await vscode.env.openExternal(url);
 		}
 	);
@@ -1567,37 +1829,26 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			await vscode.window.withProgress(
-				{
-					location: vscode.ProgressLocation.Notification,
-					title: "PackageHub",
-					cancellable: false,
-				},
+			const projects = await workspaceScanner.findProjects();
+			if (projects.length === 0) {
+				vscode.window.showErrorMessage("No .csproj or .fsproj was found to restore.");
+				return;
+			}
+
+			await writeQueue.run(async () => vscode.window.withProgress(
+				{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
 				async (progress) => {
 					progress.report({ message: "Restore is running..." });
 
 					try {
-						const projects = await workspaceScanner.findProjects();
-						const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
-						if (classicSolutionPaths(found).length === 0 && projects.length === 0) {
-							vscode.window.showErrorMessage(
-								"No .sln, .csproj, or .fsproj was found to restore."
-							);
-							return;
-						}
-
 						await restoreForProjects(projects.map((project) => project.fsPath));
-
 						vscode.window.showInformationMessage("Restore finished.");
-
-						await vscode.commands.executeCommand("packageHub.scanWorkspace");
-					} catch (error: any) {
-						const msg = error.message || String(error);
-						logger.error(`Restore error: ${msg}`);
-						vscode.window.showErrorMessage(`Restore failed: ${msg}`);
+					} catch (error) {
+						showFailure("Restore failed", error);
 					}
+					await vscode.commands.executeCommand("packageHub.scanWorkspace");
 				}
-			);
+			));
 		}
 	);
 
@@ -1608,9 +1859,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!packageId) {
 				const editor = vscode.window.activeTextEditor;
 				if (editor) {
-					packageId = readPackageRef(
-						editor.document.lineAt(editor.selection.active.line).text
-					)?.id || "";
+					packageId = activeLineRef()?.id || "";
 				}
 			}
 
@@ -1632,9 +1881,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			let packageId = requestedId;
 			if (!packageId && editor) {
-				packageId = readPackageRef(
-					editor.document.lineAt(editor.selection.active.line).text
-				)?.id || "";
+				packageId = activeLineRef()?.id || "";
 			}
 
 			if (!packageId) {
@@ -1760,9 +2007,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const openAdvisoryCommand = vscode.commands.registerCommand(
 		"packageHub.openAdvisory",
-		async (url?: string) => {
-			if (!url) {
-				vscode.window.showWarningMessage("No advisory link. The update was not started.");
+		async (url?: unknown) => {
+			if (typeof url !== "string" || !url.startsWith("https://")) {
+				vscode.window.showWarningMessage("No advisory link.");
 				return;
 			}
 
@@ -1772,9 +2019,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const quickFixBlockedCommand = vscode.commands.registerCommand(
 		"packageHub.quickFixBlocked",
-		async (message?: string) => {
+		async (message?: unknown) => {
 			vscode.window.showWarningMessage(
-				message || "No patch version. The update was not started."
+				typeof message === "string" && message ? message.slice(0, 300) : "No patch version. The update was not started."
 			);
 		}
 	);
@@ -1816,6 +2063,42 @@ export function activate(context: vscode.ExtensionContext) {
 		logger
 	);
 
+	// A changed project or props file makes the MSBuild evaluation stale.
+	const evaluationWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,props,targets}");
+	evaluationWatcher.onDidChange(() => forgetEvaluations());
+	evaluationWatcher.onDidCreate(() => forgetEvaluations());
+	evaluationWatcher.onDidDelete(() => forgetEvaluations());
+	context.subscriptions.push(evaluationWatcher);
+
+	// Saving several files at once starts one restore and one scan, 500 ms after the last save.
+	const saveScan = new Debouncer<string>(500, (paths) => {
+		void writeQueue.run(async () => {
+			forgetEvaluations();
+			const projects = (await workspaceScanner.findProjects()).map((project) => project.fsPath);
+			const affected = projects.filter((projectPath) => paths.some((saved) => {
+				if (isMsBuildProject(saved)) {
+					return pathKey(saved) === pathKey(projectPath);
+				}
+				// A props file applies to the projects under its folder.
+				const folder = pathKey(path.dirname(saved)) + path.sep;
+				return pathKey(projectPath).startsWith(folder);
+			}));
+			if (affected.length > 0) {
+				try {
+					await restoreForProjects(affected);
+				} catch (error) {
+					logger.error(`Restore after save failed: ${errorText(error)}`);
+					void vscode.window.showWarningMessage(
+						"Restore after save failed. The scan shows what dotnet could still read. See the Output panel."
+					);
+				}
+			}
+		}).finally(() => {
+			void vscode.commands.executeCommand("packageHub.scanWorkspace");
+		});
+	});
+	context.subscriptions.push({ dispose: () => saveScan.dispose() });
+
 	context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
 		if (document.uri.scheme !== "file") {
 			return;
@@ -1826,7 +2109,10 @@ export function activate(context: vscode.ExtensionContext) {
 		if (!isPackageProjectFile(document.uri.fsPath)) {
 			return;
 		}
-		void vscode.commands.executeCommand("packageHub.scanWorkspace");
+		if (ownSaves.has(pathKey(document.uri.fsPath))) {
+			return;
+		}
+		saveScan.trigger(document.uri.fsPath);
 	}));
 
 	const scanOnStartup = vscode.workspace
@@ -1850,17 +2136,11 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 function packageReferenceLine(text: string, packageId: string): number {
-	const lines = text.split(/\r?\n/);
 	const id = packageId.toLowerCase();
-	for (let index = 0; index < lines.length; index += 1) {
-		const ref = readPackageRef(lines[index]);
-		if (ref && ref.kind === "reference" && ref.id.toLowerCase() === id) {
-			return index;
-		}
-	}
-
-	return -1;
+	const ref = readPackageRefs(text).find((item) => item.kind === "reference" && item.id.toLowerCase() === id);
+	return ref ? ref.line : -1;
 }
 
 export function deactivate() {
+	killAllProcesses();
 }

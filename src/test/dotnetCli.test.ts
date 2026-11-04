@@ -1,15 +1,16 @@
 import * as assert from "assert";
 import { DotnetCli } from "../services/DotnetCli";
+import { TargetUnreadableError } from "../services/PackageList";
 
 suite("DotnetCli JSON", () => {
     const cli = new DotnetCli();
 
-    test("empty output is an empty list", () => {
-        assert.deepStrictEqual(cli.parsePackageList("", "vulnerable"), []);
+    test("empty output is not an empty healthy list", () => {
+        assert.throws(() => cli.parsePackageList("", "vulnerable"), TargetUnreadableError);
     });
 
-    test("broken JSON is an empty list", () => {
-        assert.deepStrictEqual(cli.parsePackageList("{", "vulnerable"), []);
+    test("broken JSON is not an empty healthy list", () => {
+        assert.throws(() => cli.parsePackageList("{", "vulnerable"), TargetUnreadableError);
     });
 
     test("reads a direct vulnerable package", () => {

@@ -23,7 +23,7 @@
 - **The safe update comes first.** The first suggestion is the highest patch in the same major version. A newer major is a separate choice you make on purpose.
 - **Nothing changes behind your back.** Project files are written only after you choose **Yes, Update** or **Yes, Remove**.
 - **Built for real solutions.** It reads `.sln` files, C# and F# projects, Central Package Management and transitive packages, and tells you which project brought a package in.
-- **Private.** No account, no sign-in, and no usage data is collected or sent.
+- **Local-first and private.** No account, no sign-in, no usage data. By default PackageHub itself makes no network request; `dotnet` talks to your feeds as usual.
 
 ## Features
 
@@ -59,15 +59,17 @@ Put the cursor on a vulnerable package and press **Ctrl+.** (**Cmd+.** on macOS)
 3. **Update to first fixed version** appears when the advisory names one. It is not the default.
 4. **Open Advisory** opens the advisory page when a link exists.
 
-Each choice says whether the advisory closes or stays open. Confirm with **Yes, Update** and PackageHub updates the package, restores and scans again. The line above a vulnerable package (CodeLens) offers the highest patch in one click too.
+Each choice says whether the advisory closes or stays open. Before anything is written, a summary shows the change from and to (patch, minor or major), the advisories it closes or leaves open, whether the package is direct or transitive, the projects it touches, whether `Directory.Packages.props` is edited, and prerelease or release-age warnings. It is built from the last scan and local files only. Pinning a transitive package asks for its own confirmation. Confirm with **Yes, Update** and PackageHub updates the package, restores and scans again. The line above a vulnerable package (CodeLens) offers the highest patch in one click too.
 
 ### Package Health view
 
 ![The Package Health view with Vulnerable, Outdated, Deprecated, Conflicts, Projects and Actions groups, next to Shop.Api.csproj with its line marks](docs/images/04-package-health-dark.png)
 
-The **PackageHub** icon on the Activity Bar opens your packages, grouped into **Vulnerable**, **Outdated**, **Deprecated**, **Conflicts** and **Projects**. Each package shows its version, severity and the projects that use it, including `transitive via …`. Click a package to open its line. Right-click for Update, Show Package Info, Open on NuGet, Ignore, Dependencies, Why is this here? and Remove.
+The **PackageHub** icon on the Activity Bar opens your packages, grouped into **Vulnerable**, **Outdated**, **Deprecated**, **Conflicts**, **Projects** and **Feeds**. Each package shows its version, severity and the projects that use it, including `transitive via …`. Click a package to open its line. Right-click for Update, Show Package Info, Open on NuGet, Ignore, Dependencies, Why is this here? and Remove.
 
-The status bar counts vulnerable, outdated and deprecated packages. Click it to open the dashboard.
+**Feeds** lists the NuGet sources `dotnet` uses, whether each is enabled, which ones failed in the last scan or restore (NU1301, NU1302, NU1801, NU1900, NU1905), and hints for credential providers. It reads only what `dotnet` reported; no feed is contacted to check it.
+
+The status bar counts vulnerable, outdated and deprecated packages, and says when a project could not be checked. In a folder without .NET projects it shows a plain **PackageHub**. Click it to open the dashboard.
 
 ### Health Dashboard
 
@@ -78,7 +80,8 @@ The status bar counts vulnerable, outdated and deprecated packages. Click it to 
 - **Highest patch** and **Highest minor** update every package within its major version.
 - **Update to latest** on a row updates only that package.
 - Filter by package id or severity, and switch between **List**, **By project** and **By package**.
-- Version conflicts across projects get an **Align** button.
+- Version conflicts across projects and target frameworks get an **Align** button.
+- **Feed health** shows the same source status as the Feeds group.
 
 ![The Health Dashboard in the Light Modern theme](docs/images/05-dashboard-light.png)
 
@@ -125,7 +128,7 @@ Run **PackageHub: Get Started** for a short walkthrough: open a project, run the
 - F# project files (`.fsproj`)
 - Visual Studio solutions (`.sln`). `.slnx` files are skipped.
 - Central package versions in `Directory.Packages.props`
-- `GlobalPackageReference`, when the package and its version are on the same line
+- `GlobalPackageReference`, `VersionOverride`, and package elements that span several lines
 
 When a solution cannot be loaded in one pass, PackageHub scans its projects one by one. A project that cannot load (for example an old web project that cannot import `Microsoft.WebApplication.targets`) is named in the Output panel and skipped, and the rest of the solution stays in the results.
 
@@ -133,7 +136,7 @@ When a solution cannot be loaded in one pass, PackageHub scans its projects one 
 
 PackageHub reads the versions in `Directory.Packages.props`. The marks, the hover and the lightbulb work on the `PackageVersion` lines there, and on the `PackageReference` lines in your projects that have no version of their own.
 
-When you update a package, the new version is written to `Directory.Packages.props`. You do not edit the project files by hand. The dashboard shows **CPM Enabled** when the workspace uses it.
+When you update a package, the new version is written to `Directory.Packages.props`. A `VersionOverride` is updated in the project that sets it, and a `GlobalPackageReference` in the file that declares it. You do not edit the project files by hand. The dashboard shows **CPM Enabled** when the workspace uses it.
 
 ## Commands
 
@@ -160,22 +163,30 @@ When you update a package, the new version is written to `Directory.Packages.pro
 | `packageHub.scanOnStartup` | `true` | Scans your packages when the folder opens |
 | `packageHub.includePrerelease` | `false` | Adds prereleases to the next outdated list. The vulnerability scan stays the same |
 | `packageHub.minimumSeverity` | `low` | Lowest severity PackageHub lists: `low`, `moderate`, `high` or `critical`. It does not change `NuGetAuditLevel` in the project |
-| `packageHub.minimumReleaseAge` | `0` | How many days old a latest version must be before it is preferred. `0` is off. The highest-patch suggestion ignores this |
+| `packageHub.minimumReleaseAge` | `0` | How many days old a latest version must be before it is preferred. `0` is off. The highest-patch suggestion ignores this. Publish dates come from the local NuGet cache |
 | `packageHub.dashboardViewMode` | `list` | Dashboard layout: `list`, `byProject` or `byPackage` |
 | `packageHub.ignoredPackages` | `[]` | Package ids hidden from the lists |
+| `packageHub.onlineLookups` | `false` | Lets PackageHub ask nuget.org itself for advisory ranges and publish dates that are not in the local cache |
+| `packageHub.timeouts.listSeconds` | `120` | Timeout for `dotnet list package` and other quick commands |
+| `packageHub.timeouts.outdatedSeconds` | `300` | Timeout for the outdated and deprecated lists |
+| `packageHub.timeouts.restoreSeconds` | `600` | Timeout for `dotnet restore` and `dotnet add package` |
+| `packageHub.maxDotnetProcesses` | `4` | How many `dotnet` processes run at the same time |
 
 ## Requirements
 
-- VS Code 1.125.0 or newer
+- VS Code 1.74 or newer, or a compatible editor such as Cursor or VSCodium
 - `dotnet` on your PATH
 - .NET SDK 8.0.400 or newer for **Why is this here?**
 
 ## Privacy
 
-- **No usage data.** PackageHub does not collect or send telemetry, and there is no account or sign-in.
-- **Your code stays on your machine.** Scanning, updating and the path lookup run the `dotnet` CLI locally. `dotnet` reads your NuGet sources to find vulnerabilities and newer versions, as it does on the command line.
-- **Public package data only.** PackageHub reads public data from nuget.org (advisory ranges and, when `packageHub.minimumReleaseAge` is on, release dates). It does not send your project files.
-- **Credentials stay where they are.** From `NuGet.config`, PackageHub reads only the source names it shows on the dashboard. It does not read or store credentials.
+PackageHub is local-first. With the default settings the extension itself makes no network request.
+
+- **No usage data.** PackageHub does not collect or send telemetry, and there is no account or sign-in. It runs `dotnet` with `DOTNET_CLI_TELEMETRY_OPTOUT=1`.
+- **Your code stays on your machine.** Package data comes from the `dotnet` CLI and from local files: your project files, `project.assets.json`, and the NuGet caches `dotnet` already wrote. `dotnet` itself reads the package sources in your NuGet.config to find vulnerabilities and newer versions, as it does on the command line.
+- **Online lookups are opt-in.** Only when you turn on `packageHub.onlineLookups` does PackageHub contact `api.nuget.org` over HTTPS itself, for advisory version ranges and for the release dates `packageHub.minimumReleaseAge` needs, when they are not in the local cache. It never sends your project files. With it off, a missing release date is reported as unknown and the age gate is not applied.
+- **Credentials stay where they are.** Feed health uses the source list from `dotnet nuget list source` and the messages `dotnet` printed. PackageHub does not read or store credentials, and it does not contact a feed to test it.
+- **Links open only when you click them.** NuGet and advisory pages open in your browser.
 
 ## FAQ
 

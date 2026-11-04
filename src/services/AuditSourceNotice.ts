@@ -1,5 +1,6 @@
 import * as fs from "fs/promises";
-import * as path from "path";
+import { assetsFileFor } from "./AssetsLocator";
+import { FeedFailure, feedFailuresFromAssetsLogs } from "./FeedHealth";
 
 export function logsHaveAuditDataGap(logs: unknown): boolean {
     if (!Array.isArray(logs)) {
@@ -15,19 +16,32 @@ export function logsHaveAuditDataGap(logs: unknown): boolean {
     });
 }
 
-export async function workspaceHasAuditDataGap(projectPaths: string[]): Promise<boolean> {
+export interface RestoreLogSummary {
+    auditDataGap: boolean;
+    feedFailures: FeedFailure[];
+}
+
+/**
+ * Reads the restore logs in each project.assets.json: the audit data gap
+ * (NU1905) and feed failures (NU1301, NU1801, NU1900...). Local files only.
+ */
+export async function readRestoreLogs(projectPaths: string[]): Promise<RestoreLogSummary> {
+    const summary: RestoreLogSummary = { auditDataGap: false, feedFailures: [] };
     for (const projectPath of projectPaths) {
-        const assetsPath = path.join(path.dirname(projectPath), "obj", "project.assets.json");
         try {
-            const text = await fs.readFile(assetsPath, "utf8");
+            const text = await fs.readFile(await assetsFileFor(projectPath), "utf8");
             const root = JSON.parse(text) as { logs?: unknown };
             if (logsHaveAuditDataGap(root?.logs)) {
-                return true;
+                summary.auditDataGap = true;
             }
+            summary.feedFailures.push(...feedFailuresFromAssetsLogs(root?.logs));
         } catch {
             continue;
         }
     }
+    return summary;
+}
 
-    return false;
+export async function workspaceHasAuditDataGap(projectPaths: string[]): Promise<boolean> {
+    return (await readRestoreLogs(projectPaths)).auditDataGap;
 }

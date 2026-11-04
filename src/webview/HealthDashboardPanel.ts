@@ -1,20 +1,108 @@
+import { randomBytes } from "crypto";
 import * as vscode from "vscode";
+import { advisoryCatalogSource } from "../services/AdvisoryCatalog";
+import { FeedHealthState, getFeedHealth } from "../services/FeedHealth";
 import { ScanState } from "../services/ScanState";
+import { dashboardViewMode, isDashboardViewMode, onlineLookupsEnabled } from "../services/Settings";
 import { formatProjectRelations, projectRelationCaption } from "../services/TransitiveOrigin";
+import { isValidPackageId, isValidPackageVersion } from "../utils/nugetAudit";
 
-function escapeHtml(value: string): string {
-  return value
+export function escapeHtml(value: unknown): string {
+  return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
-function escapeJs(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'")
-    .replace(/\r?\n/g, " ");
+export function makeNonce(): string {
+  return randomBytes(16).toString("base64").replace(/[^A-Za-z0-9]/g, "");
+}
+
+export type DashboardMessage =
+  | { command: "refresh" }
+  | { command: "updatePackage"; packageId: string; version?: string }
+  | { command: "safeUpdate"; channel: "patch" | "minor" }
+  | { command: "filter"; query?: string; severity?: string }
+  | { command: "setViewMode"; mode: "list" | "byProject" | "byPackage"; query?: string; severity?: string }
+  | { command: "showDependencies"; packageId: string };
+
+/**
+ * Checks a message from the webview. Anything with an unknown command or a
+ * field of the wrong shape is dropped.
+ */
+export function readDashboardMessage(message: unknown): DashboardMessage | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+  const value = message as Record<string, unknown>;
+  const text = (field: unknown) => (typeof field === "string" && field.length <= 200 ? field : undefined);
+  switch (value.command) {
+    case "refresh":
+      return { command: "refresh" };
+    case "updatePackage":
+      if (!isValidPackageId(value.packageId)) {
+        return undefined;
+      }
+      if (value.version !== undefined && value.version !== "" && !isValidPackageVersion(value.version)) {
+        return undefined;
+      }
+      return {
+        command: "updatePackage",
+        packageId: value.packageId,
+        version: typeof value.version === "string" && value.version ? value.version : undefined,
+      };
+    case "safeUpdate":
+      return value.channel === "patch" || value.channel === "minor"
+        ? { command: "safeUpdate", channel: value.channel }
+        : undefined;
+    case "filter":
+      return { command: "filter", query: text(value.query), severity: text(value.severity) };
+    case "setViewMode":
+      return isDashboardViewMode(value.mode)
+        ? { command: "setViewMode", mode: value.mode, query: text(value.query), severity: text(value.severity) }
+        : undefined;
+    case "showDependencies":
+      return isValidPackageId(value.packageId) ? { command: "showDependencies", packageId: value.packageId } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+export function feedHealthHtml(state: FeedHealthState, online: boolean): string {
+  const rows = state.statuses.map((status) => {
+    const failed = status.failures.length > 0;
+    const stateText = !status.enabled ? "Disabled" : failed ? "Failed in the last scan" : "No failure seen";
+    const failures = status.failures
+      .map((failure) => `<li><code>${escapeHtml(failure.code)}</code> ${escapeHtml(failure.message)}</li>`)
+      .join("");
+    const hints = status.hints.map((hint) => `<li>${escapeHtml(hint)}</li>`).join("");
+    return `
+      <tr class="${failed ? "feed-failed" : ""}">
+        <td><strong>${escapeHtml(status.name)}</strong><div class="muted">${escapeHtml(status.url)}</div></td>
+        <td>${escapeHtml(stateText)}</td>
+        <td>${failures ? `<ul>${failures}</ul>` : "—"}${hints ? `<ul class="hints">${hints}</ul>` : ""}</td>
+      </tr>`;
+  }).join("");
+  const unmatched = state.unmatched.length > 0
+    ? `<p>Other feed messages:</p><ul>${state.unmatched
+      .map((failure) => `<li><code>${escapeHtml(failure.code)}</code> ${escapeHtml(failure.message)}</li>`)
+      .join("")}</ul>`
+    : "";
+  const providers = state.credentialProviders.length > 0
+    ? `<p class="muted">Credential providers found: ${escapeHtml(state.credentialProviders.join(", "))}</p>`
+    : "";
+  const source = state.sources === undefined
+    ? `<p class="muted">dotnet did not list the sources${state.sourceError ? `: ${escapeHtml(state.sourceError)}` : "."}</p>`
+    : state.sources.length === 0 ? `<p class="muted">dotnet lists no package sources.</p>` : "";
+  const table = rows
+    ? `<table><thead><tr><th>Source</th><th>State</th><th>Details</th></tr></thead><tbody>${rows}</tbody></table>`
+    : "";
+  const privacy = online
+    ? "packageHub.onlineLookups is on: PackageHub may read advisory and publish data from nuget.org."
+    : "PackageHub made no network request of its own. Feed data comes from dotnet and local files.";
+  return `${source}${table}${unmatched}${providers}<p class="muted">${escapeHtml(privacy)}</p>`;
 }
 
 function graphOnlyWarning(pkg: {
@@ -28,7 +116,11 @@ function graphOnlyWarning(pkg: {
 }
 
 function packageNameButton(id: string): string {
-  return `<button type="button" class="pkg-link" onclick="showDependencies('${escapeJs(id)}', event)">${escapeHtml(id)}</button>`;
+  return `<button type="button" class="pkg-link" data-action="showDependencies" data-package="${escapeHtml(id)}">${escapeHtml(id)}</button>`;
+}
+
+function updateButton(id: string, version: string, label: string): string {
+  return `<button type="button" class="row-btn" data-action="updatePackage" data-package="${escapeHtml(id)}" data-version="${escapeHtml(version)}">${escapeHtml(label)}</button>`;
 }
 
 function normalizeSeverity(value: unknown): string {
@@ -49,7 +141,11 @@ export class HealthDashboardPanel {
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
     this._panel.webview.onDidReceiveMessage(
-      (message) => {
+      (raw) => {
+        const message = readDashboardMessage(raw);
+        if (!message) {
+          return;
+        }
         switch (message.command) {
           case "refresh":
             vscode.commands.executeCommand("packageHub.scanWorkspace");
@@ -84,11 +180,9 @@ export class HealthDashboardPanel {
               });
             break;
           case "showDependencies":
-            if (message.packageId) {
-              vscode.commands.executeCommand("packageHub.showDependencyGraph", {
-                packageId: message.packageId,
-              });
-            }
+            vscode.commands.executeCommand("packageHub.showDependencyGraph", {
+              packageId: message.packageId,
+            });
             break;
         }
       },
@@ -117,6 +211,7 @@ export class HealthDashboardPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
+        localResourceRoots: [],
       }
     );
 
@@ -163,6 +258,15 @@ export class HealthDashboardPanel {
     const hasCpm = ScanState.getCpm();
     const scannedAt = ScanState.getScannedAt();
     const scannedText = scannedAt ? `Last scanned ${scannedAt.toLocaleString()}` : "";
+    const nonce = makeNonce();
+    const cspSource = this._panel.webview.cspSource;
+    const feedHtml = feedHealthHtml(getFeedHealth(), onlineLookupsEnabled());
+    const advisorySource = advisoryCatalogSource();
+    const advisoryText = advisorySource === "local"
+      ? "Advisory ranges: local NuGet audit cache."
+      : advisorySource === "online"
+        ? "Advisory ranges: nuget.org (packageHub.onlineLookups is on)."
+        : "Advisory ranges: not loaded. Restore once with NuGetAudit on, or turn on packageHub.onlineLookups.";
     const sources = ScanState.getPackageSources();
     const auditDataGap = ScanState.hasAuditDataGap();
     const sourcesText = !sources
@@ -173,12 +277,9 @@ export class HealthDashboardPanel {
           ? "No NuGet.config."
           : sources.names.length === 0
             ? "No sources."
-            : `Sources: ${escapeHtml(sources.names.join(", "))}`;
+            : `Sources: ${sources.names.join(", ")}`;
 
-    const viewMode =
-      vscode.workspace
-        .getConfiguration("packageHub")
-        .get<string>("dashboardViewMode") || "list";
+    const viewMode = dashboardViewMode();
     const query = this.query;
     const severity = this.severity;
     const severityById = new Map<string, string>();
@@ -198,7 +299,7 @@ export class HealthDashboardPanel {
     ) => {
       const columns = showProjects ? 5 : 4;
       if (packages.length === 0) {
-        return `<tr><td colspan="${columns}" style="opacity:0.6; padding:12px;">No ${type} packages</td></tr>`;
+        return `<tr><td colspan="${columns}" class="empty">No ${escapeHtml(type)} packages</td></tr>`;
       }
 
       return packages
@@ -220,8 +321,8 @@ export class HealthDashboardPanel {
                 ? "Deprecated"
                 : "Outdated";
 
-          const updateButton = latest && !graphOnlyWarning(p)
-            ? `<button class="row-btn" onclick="updatePackage('${p.id}', '${latest}')">Update to latest</button>`
+          const rowButton = latest && !graphOnlyWarning(p)
+            ? updateButton(p.id, latest, "Update to latest")
             : "";
           const caption = projectName ? projectRelationCaption(p, projectName) : "";
 
@@ -232,10 +333,10 @@ export class HealthDashboardPanel {
             <span class="badge ${badgeClass}">${badgeText}</span>
             ${caption ? `<div>${escapeHtml(caption)}</div>` : ""}
           </td>
-          <td>${p.version}</td>
-          <td>${latest || "—"}</td>
+          <td>${escapeHtml(p.version)}</td>
+          <td>${escapeHtml(latest || "—")}</td>
           ${showProjects ? `<td>${escapeHtml(formatProjectRelations(p))}</td>` : ""}
-          <td>${updateButton}</td>
+          <td>${rowButton}</td>
         </tr>
       `;
         })
@@ -303,7 +404,7 @@ export class HealthDashboardPanel {
 
     const conflictHtml =
       conflictCount === 0
-        ? `<p style="opacity:0.6;">No version conflicts</p>`
+        ? `<p class="empty">No version conflicts</p>`
         : conflicts
           .map((c) => {
 
@@ -313,16 +414,16 @@ export class HealthDashboardPanel {
 
             const latest = pkg?.latestVersion || "";
 
-            const alignBtn = latest
-              ? `<button class="row-btn" onclick="updatePackage('${pkg!.id}', '${latest}')">Align to ${latest}</button>`
+            const alignBtn = latest && pkg
+              ? updateButton(pkg.id, latest, `Align to ${latest}`)
               : "";
 
             const rows = c.versions
               .map(
                 (v) => `
             <tr>
-              <td>${v.version}</td>
-              <td>${v.projects.join(", ")}</td>
+              <td>${escapeHtml(v.version)}</td>
+              <td>${escapeHtml(v.projects.join(", "))}</td>
             </tr>
           `
               )
@@ -396,7 +497,7 @@ export class HealthDashboardPanel {
           </thead>
           <tbody>${createRows(
       deprecated.map((p) => ({ ...p, kind: "deprecated" })),
-      "outdated"
+      "deprecated"
     )}</tbody>
         </table>
       </details>
@@ -412,7 +513,7 @@ export class HealthDashboardPanel {
         const rows = createRows(byProject[projectName], "outdated", projectName, false);
         return `
           <details class="filter-group" open>
-            <summary><strong>${projectName}</strong> (${byProject[projectName].length})</summary>
+            <summary><strong>${escapeHtml(projectName)}</strong> (${byProject[projectName].length})</summary>
             <table>
               <thead>
                 <tr>
@@ -441,8 +542,8 @@ export class HealthDashboardPanel {
           .join("");
 
         const latest = p.latestVersion || "";
-        const updateButton = latest && !graphOnlyWarning(p)
-          ? `<button class="row-btn" onclick="updatePackage('${escapeJs(p.id)}', '${escapeJs(latest)}')">Update to latest</button>`
+        const packageButton = latest && !graphOnlyWarning(p)
+          ? updateButton(p.id, latest, "Update to latest")
           : "";
 
         return `
@@ -462,10 +563,10 @@ export class HealthDashboardPanel {
               : "Outdated"
           }
               </span>
-              <span style="opacity:0.7"> ${escapeHtml(p.version)} → ${escapeHtml(latest || "—")}</span>
+              <span class="muted"> ${escapeHtml(p.version)} → ${escapeHtml(latest || "—")}</span>
             </summary>
             <ul>${projectList}</ul>
-            ${updateButton}
+            ${packageButton}
           </details>
         `;
       })
@@ -483,9 +584,10 @@ export class HealthDashboardPanel {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}'; img-src ${cspSource};">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PackageHub Dashboard</title>
-  <style>
+  <style nonce="${nonce}">
     body {
       font-family: var(--vscode-font-family);
       color: var(--vscode-foreground);
@@ -671,6 +773,11 @@ export class HealthDashboardPanel {
     .filters input { min-width: 220px; }
     .hidden { display: none; }
     .filter-empty { opacity: 0.6; margin: 8px 0 16px; }
+    .empty { opacity: 0.6; padding: 12px; }
+    .muted { opacity: 0.7; font-size: 0.85rem; }
+    .feed-failed td:first-child { border-left: 3px solid var(--vscode-errorForeground); }
+    .hints { opacity: 0.85; }
+    footer { margin-top: 24px; opacity: 0.7; font-size: 0.85rem; }
   </style>
 </head>
 <body>
@@ -710,13 +817,14 @@ export class HealthDashboardPanel {
     </div>
   </div>
 
-  ${sourcesText ? `<p class="sources">${sourcesText}</p>` : ""}
-  ${auditDataGap ? `<p class="sources">the audit source did not return vulnerability data</p>` : ""}
+  ${sourcesText ? `<p class="sources">${escapeHtml(sourcesText)}</p>` : ""}
+  ${auditDataGap ? `<p class="sources">The audit source did not return vulnerability data.</p>` : ""}
+  <p class="sources">${escapeHtml(advisoryText)}</p>
 
   <div class="safe-actions">
-    <button onclick="refresh()">Refresh Scan</button>
-    <button onclick="safeUpdate('patch')">Highest patch</button>
-    <button onclick="safeUpdate('minor')">Highest minor</button>
+    <button type="button" data-action="refresh">Refresh Scan</button>
+    <button type="button" data-action="safeUpdate" data-channel="patch">Highest patch</button>
+    <button type="button" data-action="safeUpdate" data-channel="minor">Highest minor</button>
   </div>
 
   <div class="filters">
@@ -731,52 +839,59 @@ export class HealthDashboardPanel {
   </div>
 
   <div class="view-switch">
-    <button class="${viewMode === "list" ? "active" : ""}" onclick="setViewMode('list')">List</button>
-    <button class="${viewMode === "byProject" ? "active" : ""}" onclick="setViewMode('byProject')">By project</button>
-    <button class="${viewMode === "byPackage" ? "active" : ""}" onclick="setViewMode('byPackage')">By package</button>
+    <button type="button" class="${viewMode === "list" ? "active" : ""}" data-action="setViewMode" data-mode="list">List</button>
+    <button type="button" class="${viewMode === "byProject" ? "active" : ""}" data-action="setViewMode" data-mode="byProject">By project</button>
+    <button type="button" class="${viewMode === "byPackage" ? "active" : ""}" data-action="setViewMode" data-mode="byPackage">By package</button>
   </div>
 
   ${contentHtml}
-  <p id="filter-empty" class="filter-empty hidden">no packages</p>
+  <p id="filter-empty" class="filter-empty hidden">No packages match the filter.</p>
 
-  <script>
+  <details class="feed-health" open>
+    <summary><strong>Feed Health</strong></summary>
+    ${feedHtml}
+  </details>
+
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
 
-    function refresh() {
-      vscode.postMessage({ command: "refresh" });
-    }
-
-    function updatePackage(packageId, version) {
-      vscode.postMessage({
-        command: "updatePackage",
-        packageId: packageId,
-        version: version
-      });
-    }
-
-    function showDependencies(packageId, event) {
-      if (event) {
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-action]") : null;
+      if (!target) {
+        return;
+      }
+      const action = target.getAttribute("data-action");
+      if (action === "showDependencies" || action === "updatePackage") {
         event.preventDefault();
         event.stopPropagation();
       }
-      vscode.postMessage({
-        command: "showDependencies",
-        packageId: packageId
-      });
-    }
-
-    function safeUpdate(channel) {
-      vscode.postMessage({ command: "safeUpdate", channel: channel });
-    }
-
-    function setViewMode(mode) {
-      vscode.postMessage({
-        command: "setViewMode",
-        mode: mode,
-        query: document.getElementById("pkg-search").value,
-        severity: document.getElementById("pkg-severity").value
-      });
-    }
+      switch (action) {
+        case "refresh":
+          vscode.postMessage({ command: "refresh" });
+          break;
+        case "updatePackage":
+          vscode.postMessage({
+            command: "updatePackage",
+            packageId: target.getAttribute("data-package") || "",
+            version: target.getAttribute("data-version") || ""
+          });
+          break;
+        case "showDependencies":
+          vscode.postMessage({ command: "showDependencies", packageId: target.getAttribute("data-package") || "" });
+          break;
+        case "safeUpdate":
+          vscode.postMessage({ command: "safeUpdate", channel: target.getAttribute("data-channel") || "" });
+          break;
+        case "setViewMode":
+          vscode.postMessage({
+            command: "setViewMode",
+            mode: target.getAttribute("data-mode") || "",
+            query: document.getElementById("pkg-search").value,
+            severity: document.getElementById("pkg-severity").value
+          });
+          break;
+      }
+    });
 
     function publishFilter() {
       vscode.postMessage({
@@ -833,12 +948,12 @@ export class HealthDashboardPanel {
     });
     applyFilter();
   </script>
-  <footer style="margin-top: 24px; opacity: 0.7; font-size: 0.85rem;">
-     <p style="opacity:0.7; font-size:0.85rem;">
+  <footer>
+    <p>
       Ignored: ${ignoredCount}
-      ${ignoredCount > 0 ? "(PackageHub: Unignore Package ile geri al)" : ""}
+      ${ignoredCount > 0 ? "(run PackageHub: Unignore Package to show them again)" : ""}
     </p>
-    ${scannedText}
+    ${escapeHtml(scannedText)}
   </footer>
 </body>
 </html>

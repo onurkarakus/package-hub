@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { isMsBuildProject } from "../services/projectFiles";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
-import { readPackageRef } from "../utils/nugetAudit";
+import { readPackageRefs } from "../utils/nugetAudit";
 import { PackageCodeActionProvider } from "./PackageCodeActionProvider";
 
 export function resolveLensPatch(
@@ -43,22 +43,25 @@ export class PackageCodeLensProvider implements vscode.CodeLensProvider, vscode.
 
         const lenses: vscode.CodeLens[] = [];
 
-        for (let line = 0; line < document.lineCount; line++) {
+        const projectName = isMsBuildProject(document.fileName)
+            ? this.scanner.getProjectName(document.uri)
+            : undefined;
+
+        for (const ref of readPackageRefs(document.getText())) {
             if (token.isCancellationRequested) {
                 return lenses;
             }
-
-            const ref = readPackageRef(document.lineAt(line).text);
-            if (!ref) {
-                continue;
-            }
+            const line = ref.line;
 
             const found = ScanState.findPackage(ref.id);
             if (!found.vulnerable && !found.outdated) {
                 continue;
             }
 
-            const currentVersion = ref.version || found.vulnerable?.version || found.outdated?.version;
+            const currentVersion = ScanState.resolvedVersionIn(ref.id, projectName)
+                || found.vulnerable?.version
+                || found.outdated?.version
+                || ref.version;
             const stored = found.vulnerable?.highestPatch || found.outdated?.highestPatch;
             const peek = await this.versions.peekUpdateTargets(document, ref.id, currentVersion);
             const patch = resolveLensPatch(stored, peek);

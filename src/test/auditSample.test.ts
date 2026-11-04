@@ -1,4 +1,5 @@
 import * as assert from "assert";
+import { execFile } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -6,6 +7,19 @@ import { directReferencer, GraphBuilder } from "../services/GraphBuilder";
 
 suite("Audit sample", function () {
     this.timeout(180000);
+
+    // The graph tests read obj/project.assets.json. Restore first so the
+    // result does not depend on test order.
+    suiteSetup(async function () {
+        this.timeout(300000);
+        const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!folder) {
+            return;
+        }
+        await new Promise<void>((resolve) => {
+            execFile("dotnet", ["restore"], { cwd: folder, timeout: 280000 }, () => resolve());
+        });
+    });
 
     test("the extension is active in the sample workspace", async () => {
         const folder = workspaceFolder();
@@ -27,11 +41,19 @@ suite("Audit sample", function () {
             vscode.workspace.getConfiguration("packageHub").get("includePrerelease"),
             true
         );
-        assert.deepStrictEqual(extension.packageJSON.activationEvents, [
-            "onLanguage:csharp",
-            "onLanguage:fsharp",
-            "workspaceContains:**/*.{csproj,fsproj,sln,props}",
+        // VS Code adds onCommand/onView events at runtime, so compare the declared ones only.
+        const declared = (extension.packageJSON.activationEvents as string[])
+            .filter((event) => !event.startsWith("onCommand:") && !event.startsWith("onView:"));
+        assert.deepStrictEqual(declared, [
+            "workspaceContains:**/*.{csproj,fsproj,sln,slnx}",
+            "workspaceContains:**/Directory.Packages.props",
         ]);
+        assert.strictEqual(extension.packageJSON.capabilities.untrustedWorkspaces.supported, false);
+        assert.strictEqual(
+            vscode.workspace.getConfiguration("packageHub").get("onlineLookups"),
+            false,
+            "PackageHub must make no network request of its own by default"
+        );
     });
 
     test("the marketplace icon is a png and the activity bar stays a codicon", async () => {
