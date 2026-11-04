@@ -44,6 +44,19 @@
 			"preLaunchTask": "npm: watch:esbuild"
 		},
 		{
+			"name": "Run Extension (contoso sample)",
+			"type": "extensionHost",
+			"request": "launch",
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}",
+				"${workspaceFolder}/samples/contoso-shop"
+			],
+			"outFiles": [
+				"${workspaceFolder}/dist/**/*.js"
+			],
+			"preLaunchTask": "npm: watch:esbuild"
+		},
+		{
 			"name": "Run Extension (stable)",
 			"type": "extensionHost",
 			"request": "launch",

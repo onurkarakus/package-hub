@@ -5,6 +5,7 @@ import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { directProjectNames, formatProjectRelations, transitiveCaption } from "../services/TransitiveOrigin";
 import { readPackageRef } from "../utils/nugetAudit";
+import { welcomeState } from "../services/welcomeState";
 import { deprecate } from "node:util";
 
 const errorColor = new vscode.ThemeColor("problemsErrorIcon.foreground");
@@ -87,6 +88,19 @@ export class PackageHubTreeProvider
         const deprecated = ScanState.getDeprecated();
         const conflicts = ScanState.getVersionConflicts();
 
+        let rootProjects: vscode.Uri[] | undefined;
+        if (!element) {
+            // An empty root lets the welcome view (viewsWelcome) explain what to open.
+            const folderCount = vscode.workspace.workspaceFolders?.length ?? 0;
+            rootProjects = folderCount > 0 ? await new WorkspaceScanner().findProjects() : [];
+            const state = welcomeState(folderCount, rootProjects.length);
+            void vscode.commands.executeCommand("setContext", "packageHub.noProjects", state === "noProjects");
+            void vscode.commands.executeCommand("setContext", "packageHub.hasProjects", rootProjects.length > 0);
+            if (state) {
+                return [];
+            }
+        }
+
         if (!element && !ScanState.getScannedAt()) {
             return [
                 new PackageHubTreeItem("Scan Now", vscode.TreeItemCollapsibleState.None, {
@@ -101,7 +115,7 @@ export class PackageHubTreeProvider
         }
 
         if (!element) {
-            const projects = await new WorkspaceScanner().findProjects();
+            const projects = rootProjects ?? await new WorkspaceScanner().findProjects();
             const expandProjects = projects.length > 0 && projects.length <= 4 && vulnerable.length > 0;
             return [
                 section("Vulnerable", vulnerable.length, vulnerable.length > 0, new vscode.ThemeIcon("error", errorColor)),
