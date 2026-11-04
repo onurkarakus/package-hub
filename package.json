@@ -5,6 +5,10 @@
   "description": "Manage your NuGet packages in the editor. See which ones need attention, then update them in a few clicks.",
   "version": "0.1.0",
   "license": "MIT",
+  "author": {
+    "name": "Onur Karakuş"
+  },
+  "homepage": "https://github.com/onurkarakus/package-hub#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/onurkarakus/package-hub.git"
@@ -12,7 +16,6 @@
   "bugs": {
     "url": "https://github.com/onurkarakus/package-hub/issues"
   },
-  "homepage": "https://github.com/onurkarakus/package-hub#readme",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -53,92 +56,97 @@
     "commands": [
       {
         "command": "packageHub.scanWorkspace",
-        "title": "PackageHub: Scan Workspace",
+        "title": "%command.scanWorkspace%",
         "icon": "$(search)"
       },
       {
         "command": "packageHub.showHealthDashboard",
-        "title": "PackageHub: Show Health Dashboard",
+        "title": "%command.showHealthDashboard%",
         "icon": "$(dashboard)"
       },
       {
         "command": "packageHub.explainSelectedPackage",
-        "title": "PackageHub: Explain Selected Package"
+        "title": "%command.explainSelectedPackage%"
       },
       {
         "command": "packageHub.restoreAll",
-        "title": "PackageHub: Restore All"
+        "title": "%command.restoreAll%"
       },
       {
         "command": "packageHub.updateVulnerable",
-        "title": "PackageHub: Update Vulnerable"
+        "title": "%command.updateVulnerable%"
       },
       {
         "command": "packageHub.updateSelectedPackage",
-        "title": "PackageHub: Update Package"
+        "title": "%command.updateSelectedPackage%"
       },
       {
         "command": "packageHub.showPackageInfo",
-        "title": "PackageHub: Show Package Info"
+        "title": "%command.showPackageInfo%"
       },
       {
         "command": "packageHub.openNugetPage",
-        "title": "PackageHub: Open on NuGet"
+        "title": "%command.openNugetPage%"
       },
       {
         "command": "packageHub.showDependencyGraph",
-        "title": "PackageHub: Dependencies"
+        "title": "%command.showDependencyGraph%"
       },
       {
         "command": "packageHub.copyHealthReport",
-        "title": "PackageHub: Copy Health Report"
+        "title": "%command.copyHealthReport%"
       },
       {
         "command": "packageHub.copyVulnerabilityReport",
-        "title": "PackageHub: Copy Vulnerability Report"
+        "title": "%command.copyVulnerabilityReport%"
       },
       {
         "command": "packageHub.updateHighestPatch",
-        "title": "PackageHub: Update All to Highest Patch"
+        "title": "%command.updateHighestPatch%"
       },
       {
         "command": "packageHub.updateHighestMinor",
-        "title": "PackageHub: Update All to Highest Minor"
+        "title": "%command.updateHighestMinor%"
       },
       {
         "command": "packageHub.whyPackage",
-        "title": "PackageHub: Why is this here?"
+        "title": "%command.whyPackage%"
       },
       {
         "command": "packageHub.ignorePackage",
-        "title": "PackageHub: Ignore Package"
+        "title": "%command.ignorePackage%"
       },
       {
         "command": "packageHub.unignorePackage",
-        "title": "PackageHub: Unignore Package"
+        "title": "%command.unignorePackage%"
       },
       {
         "command": "packageHub.removePackage",
-        "title": "PackageHub: Remove Package"
+        "title": "%command.removePackage%"
       },
       {
         "command": "packageHub.updateLinePatch",
-        "title": "PackageHub: Update to Highest Patch"
+        "title": "%command.updateLinePatch%"
       },
       {
         "command": "packageHub.updateLineLatest",
-        "title": "PackageHub: Update to Latest"
+        "title": "%command.updateLineLatest%"
       },
       {
         "command": "packageHub.openLineAdvisory",
-        "title": "PackageHub: Open Advisory"
+        "title": "%command.openLineAdvisory%"
+      },
+      {
+        "command": "packageHub.openWalkthrough",
+        "title": "%command.openWalkthrough%",
+        "icon": "$(book)"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "packageHub",
-          "title": "PackageHub",
+          "title": "%viewsContainer.packageHub.title%",
           "icon": "$(package)"
         }
       ]
@@ -147,11 +155,117 @@
       "packageHub": [
         {
           "id": "packageHubExplorer",
-          "name": "Package Health",
+          "name": "%view.packageHubExplorer.name%",
           "icon": "$(package)"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "packageHubExplorer",
+        "when": "workspaceFolderCount == 0",
+        "contents": "%welcome.noFolder%"
+      },
+      {
+        "view": "packageHubExplorer",
+        "when": "workspaceFolderCount > 0 && packageHub.noProjects",
+        "contents": "%welcome.noProjects%"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "packageHub.getStarted",
+        "title": "%walkthrough.title%",
+        "description": "%walkthrough.description%",
+        "steps": [
+          {
+            "id": "packageHub.open",
+            "title": "%walkthrough.open.title%",
+            "description": "%walkthrough.open.description%",
+            "media": {
+              "markdown": "media/walkthrough/open.md"
+            },
+            "completionEvents": [
+              "onContext:packageHub.hasProjects"
+            ]
+          },
+          {
+            "id": "packageHub.scan",
+            "title": "%walkthrough.scan.title%",
+            "description": "%walkthrough.scan.description%",
+            "media": {
+              "image": "media/walkthrough/scan.png",
+              "altText": "The Package Health view after a scan, with vulnerable, outdated and deprecated packages"
+            },
+            "completionEvents": [
+              "onContext:packageHub.scanCompleted",
+              "onCommand:packageHub.scanWorkspace"
+            ]
+          },
+          {
+            "id": "packageHub.marks",
+            "title": "%walkthrough.marks.title%",
+            "description": "%walkthrough.marks.description%",
+            "media": {
+              "image": "media/walkthrough/marks.png",
+              "altText": "Package lines with a warning, a cross with the newer version, and a check"
+            },
+            "completionEvents": [
+              "onStepSelected"
+            ]
+          },
+          {
+            "id": "packageHub.update",
+            "title": "%walkthrough.update.title%",
+            "description": "%walkthrough.update.description%",
+            "media": {
+              "image": "media/walkthrough/quick-fix.png",
+              "altText": "The lightbulb menu on a vulnerable package"
+            },
+            "completionEvents": [
+              "onCommand:packageHub.updateVulnerable"
+            ]
+          },
+          {
+            "id": "packageHub.health",
+            "title": "%walkthrough.health.title%",
+            "description": "%walkthrough.health.description%",
+            "media": {
+              "image": "media/walkthrough/dashboard.png",
+              "altText": "The Health Dashboard"
+            },
+            "completionEvents": [
+              "onCommand:packageHub.showHealthDashboard"
+            ]
+          },
+          {
+            "id": "packageHub.why",
+            "title": "%walkthrough.why.title%",
+            "description": "%walkthrough.why.description%",
+            "media": {
+              "image": "media/walkthrough/why.png",
+              "altText": "The path window for one package"
+            },
+            "completionEvents": [
+              "onCommand:packageHub.whyPackage"
+            ]
+          },
+          {
+            "id": "packageHub.settings",
+            "title": "%walkthrough.settings.title%",
+            "description": "%walkthrough.settings.description%",
+            "media": {
+              "markdown": "media/walkthrough/settings.md"
+            },
+            "completionEvents": [
+              "onSettingChanged:packageHub.minimumSeverity",
+              "onSettingChanged:packageHub.includePrerelease",
+              "onSettingChanged:packageHub.minimumReleaseAge"
+            ]
+          }
+        ]
+      }
+    ],
     "configuration": [
       {
         "title": "PackageHub",
@@ -164,17 +278,17 @@
               "byPackage"
             ],
             "default": "list",
-            "description": "Dashboard layout: list, by project, or by package."
+            "description": "%config.dashboardViewMode.description%"
           },
           "packageHub.scanOnStartup": {
             "type": "boolean",
             "default": true,
-            "description": "Scan packages when the workspace opens."
+            "description": "%config.scanOnStartup.description%"
           },
           "packageHub.includePrerelease": {
             "type": "boolean",
             "default": false,
-            "description": "Include prereleases in the next outdated list. Off by default. The vulnerability scan is unchanged. Applied on the next scan."
+            "description": "%config.includePrerelease.description%"
           },
           "packageHub.minimumSeverity": {
             "type": "string",
@@ -185,13 +299,13 @@
               "critical"
             ],
             "default": "low",
-            "description": "Lowest severity PackageHub reports. Does not change NuGetAuditLevel in the project."
+            "description": "%config.minimumSeverity.description%"
           },
           "packageHub.minimumReleaseAge": {
             "type": "number",
             "default": 0,
             "minimum": 0,
-            "description": "How many days old a latest version must be before it is preferred. 0 is off. Highest patch ignores this. Publish dates come from the local NuGet cache; with packageHub.onlineLookups off, a date that is not cached is reported as unknown."
+            "description": "%config.minimumReleaseAge.description%"
           },
           "packageHub.ignoredPackages": {
             "type": "array",
@@ -199,37 +313,37 @@
               "type": "string"
             },
             "default": [],
-            "description": "Package ids to hide from scan results."
+            "description": "%config.ignoredPackages.description%"
           },
           "packageHub.onlineLookups": {
             "type": "boolean",
             "default": false,
-            "markdownDescription": "Allow PackageHub to contact nuget.org itself when local data is missing: advisory ranges (VulnerabilityInfo) and publish dates for `#packageHub.minimumReleaseAge#`. Off by default: PackageHub then makes no network request of its own. `dotnet` still uses your NuGet.config feeds as usual."
+            "markdownDescription": "%config.onlineLookups.markdownDescription%"
           },
           "packageHub.timeouts.listSeconds": {
             "type": "number",
             "default": 120,
             "minimum": 10,
-            "description": "Timeout in seconds for dotnet list package (vulnerable, installed) and other quick dotnet commands."
+            "description": "%config.timeouts.listSeconds.description%"
           },
           "packageHub.timeouts.outdatedSeconds": {
             "type": "number",
             "default": 300,
             "minimum": 10,
-            "description": "Timeout in seconds for dotnet list package --outdated and --deprecated."
+            "description": "%config.timeouts.outdatedSeconds.description%"
           },
           "packageHub.timeouts.restoreSeconds": {
             "type": "number",
             "default": 600,
             "minimum": 10,
-            "description": "Timeout in seconds for dotnet restore and dotnet add package."
+            "description": "%config.timeouts.restoreSeconds.description%"
           },
           "packageHub.maxDotnetProcesses": {
             "type": "number",
             "default": 4,
             "minimum": 1,
             "maximum": 16,
-            "description": "How many dotnet processes PackageHub runs at the same time."
+            "description": "%config.maxDotnetProcesses.description%"
           }
         }
       }
@@ -245,6 +359,11 @@
           "command": "packageHub.showHealthDashboard",
           "when": "view == packageHubExplorer",
           "group": "navigation@2"
+        },
+        {
+          "command": "packageHub.openWalkthrough",
+          "when": "view == packageHubExplorer",
+          "group": "packageHub@9"
         }
       ],
       "view/item/context": [

@@ -5,6 +5,7 @@ import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
 import { directProjectNames, formatProjectRelations, transitiveCaption } from "../services/TransitiveOrigin";
 import { getFeedHealth } from "../services/FeedHealth";
+import { welcomeState } from "../services/welcomeState";
 import { readPackageRefs, severityRank as severityLevel } from "../utils/nugetAudit";
 
 const errorColor = new vscode.ThemeColor("problemsErrorIcon.foreground");
@@ -95,6 +96,22 @@ export class PackageHubTreeProvider
         const deprecated = ScanState.getDeprecated();
         const conflicts = ScanState.getVersionConflicts();
 
+        let rootProjects: vscode.Uri[] | undefined;
+        if (!element) {
+            // An empty root lets the welcome view (viewsWelcome) explain what to open.
+            const folderCount = vscode.workspace.workspaceFolders?.length ?? 0;
+            const found = folderCount > 0
+                ? await sharedScanner.countScanTargets()
+                : { projects: [] as vscode.Uri[], targets: 0 };
+            rootProjects = found.projects;
+            const state = welcomeState(folderCount, found.targets);
+            void vscode.commands.executeCommand("setContext", "packageHub.noProjects", state === "noProjects");
+            void vscode.commands.executeCommand("setContext", "packageHub.hasProjects", found.targets > 0);
+            if (state) {
+                return [];
+            }
+        }
+
         if (!element && !ScanState.getScannedAt()) {
             return [
                 new PackageHubTreeItem("Scan Now", vscode.TreeItemCollapsibleState.None, {
@@ -109,7 +126,7 @@ export class PackageHubTreeProvider
         }
 
         if (!element) {
-            const projects = await sharedScanner.findProjects();
+            const projects = rootProjects ?? await sharedScanner.findProjects();
             const feeds = getFeedHealth();
             const failingFeeds = feeds.statuses.filter((status) => status.enabled && status.failures.length > 0).length
                 + (feeds.unmatched.length > 0 ? 1 : 0);
