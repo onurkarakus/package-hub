@@ -3,14 +3,22 @@
   "publisher": "onurkarakus",
   "displayName": "PackageHub",
   "description": "Manage your NuGet packages in the editor. See which ones need attention, then update them in a few clicks.",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/onurkarakus/package-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/onurkarakus/package-hub/issues"
+  },
+  "homepage": "https://github.com/onurkarakus/package-hub#readme",
   "engines": {
-    "vscode": "^1.125.0"
+    "vscode": "^1.74.0"
   },
   "categories": [
-    "Programming Languages",
-    "Linters"
+    "Linters",
+    "Other"
   ],
   "keywords": [
     "nuget",
@@ -30,11 +38,17 @@
     "theme": "dark"
   },
   "activationEvents": [
-    "onLanguage:csharp",
-    "onLanguage:fsharp",
-    "workspaceContains:**/*.{csproj,fsproj,sln,props}"
+    "workspaceContains:**/*.{csproj,fsproj,sln,slnx}",
+    "workspaceContains:**/Directory.Packages.props"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "PackageHub runs dotnet and MSBuild, which can run code from the workspace. Trust the folder to scan it."
+    },
+    "virtualWorkspaces": false
+  },
   "contributes": {
     "commands": [
       {
@@ -177,7 +191,7 @@
             "type": "number",
             "default": 0,
             "minimum": 0,
-            "description": "How many days old a latest version must be before it is preferred. 0 is off. Highest patch ignores this."
+            "description": "How many days old a latest version must be before it is preferred. 0 is off. Highest patch ignores this. Publish dates come from the local NuGet cache; with packageHub.onlineLookups off, a date that is not cached is reported as unknown."
           },
           "packageHub.ignoredPackages": {
             "type": "array",
@@ -186,6 +200,36 @@
             },
             "default": [],
             "description": "Package ids to hide from scan results."
+          },
+          "packageHub.onlineLookups": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Allow PackageHub to contact nuget.org itself when local data is missing: advisory ranges (VulnerabilityInfo) and publish dates for `#packageHub.minimumReleaseAge#`. Off by default: PackageHub then makes no network request of its own. `dotnet` still uses your NuGet.config feeds as usual."
+          },
+          "packageHub.timeouts.listSeconds": {
+            "type": "number",
+            "default": 120,
+            "minimum": 10,
+            "description": "Timeout in seconds for dotnet list package (vulnerable, installed) and other quick dotnet commands."
+          },
+          "packageHub.timeouts.outdatedSeconds": {
+            "type": "number",
+            "default": 300,
+            "minimum": 10,
+            "description": "Timeout in seconds for dotnet list package --outdated and --deprecated."
+          },
+          "packageHub.timeouts.restoreSeconds": {
+            "type": "number",
+            "default": 600,
+            "minimum": 10,
+            "description": "Timeout in seconds for dotnet restore and dotnet add package."
+          },
+          "packageHub.maxDotnetProcesses": {
+            "type": "number",
+            "default": 4,
+            "minimum": 1,
+            "maximum": 16,
+            "description": "How many dotnet processes PackageHub runs at the same time."
           }
         }
       }
@@ -271,6 +315,36 @@
           "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
           "group": "packageHub@6"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "packageHub.updateVulnerable",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.updateSelectedPackage",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.showPackageInfo",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.openNugetPage",
+          "when": "false"
+        },
+        {
+          "command": "packageHub.updateLinePatch",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+        },
+        {
+          "command": "packageHub.updateLineLatest",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+        },
+        {
+          "command": "packageHub.openLineAdvisory",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+        }
       ]
     }
   },
@@ -286,10 +360,13 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:min": "node scripts/test-min.mjs",
+    "publish:ovsx": "npx --yes ovsx publish",
+    "package:vsix": "npx --yes @vscode/vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.125.0",
+    "@types/vscode": "~1.74.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
     "typescript-eslint": "^8.61.1",
