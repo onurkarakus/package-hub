@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- New Health Dashboard: a health score with its breakdown, KPI cards, a package table you can search, filter, sort and expand (advisories, projects, the path that brings a transitive package in), recommended actions with Preview and Apply, a project heatmap and the feed status. It follows the color theme and is built from the last scan and local advisory data only.
+
+### Removed
+
+- The `packageHub.dashboardViewMode` setting. The table and the project heatmap replace the List, By project and By package layouts.
+
 ## [0.1.0] - 2026-11-05
 
 ### Added
