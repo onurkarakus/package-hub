@@ -1,7 +1,8 @@
 import * as assert from "assert";
+import * as fs from "fs";
+import * as path from "path";
 import { escapeMarkdown, HOVER_COMMANDS, safeAdvisoryUrl } from "../providers/PackageHoverProvider";
-import { escapeHtml, feedHealthHtml, makeNonce, readDashboardMessage } from "../webview/HealthDashboardPanel";
-import { isDashboardViewMode } from "../services/Settings";
+import { dashboardHtml, escapeHtml, isActionId, makeNonce, readDashboardMessage } from "../webview/HealthDashboardPanel";
 
 suite("Webview and hover safety", () => {
     test("HTML is escaped", () => {
@@ -26,42 +27,65 @@ suite("Webview and hover safety", () => {
         });
         assert.strictEqual(readDashboardMessage({ command: "updatePackage", packageId: "A; rm", version: "1.0.0" }), undefined);
         assert.strictEqual(readDashboardMessage({ command: "updatePackage", packageId: "A", version: "1.0.0 --source evil" }), undefined);
-        assert.deepStrictEqual(readDashboardMessage({ command: "safeUpdate", channel: "patch" }), { command: "safeUpdate", channel: "patch" });
-        assert.strictEqual(readDashboardMessage({ command: "safeUpdate", channel: "major" }), undefined);
-        assert.strictEqual(readDashboardMessage({ command: "setViewMode", mode: "<script>" }), undefined);
-        assert.strictEqual(readDashboardMessage({ command: "setViewMode", mode: "byProject" })?.command, "setViewMode");
+        assert.deepStrictEqual(readDashboardMessage({ command: "applyAction", actionId: "patch" }), { command: "applyAction", actionId: "patch" });
+        assert.deepStrictEqual(readDashboardMessage({ command: "previewAction", actionId: "pin:Azure.Identity" }), {
+            command: "previewAction", actionId: "pin:Azure.Identity",
+        });
+        assert.strictEqual(readDashboardMessage({ command: "applyAction", actionId: "pin:A; rm -rf" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "applyAction", actionId: "major" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "applyAction" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "safeUpdate", channel: "patch" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "setViewMode", mode: "byProject" }), undefined);
+        assert.deepStrictEqual(readDashboardMessage({ command: "openAdvisory", url: "https://github.com/advisories/GHSA-1" }), {
+            command: "openAdvisory", url: "https://github.com/advisories/GHSA-1",
+        });
+        assert.strictEqual(readDashboardMessage({ command: "openAdvisory", url: "javascript:alert(1)" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "openAdvisory", url: "command:packageHub.removePackage" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "showDependencies", packageId: "../x" }), undefined);
+        assert.deepStrictEqual(readDashboardMessage({ command: "ready" }), { command: "ready" });
         assert.strictEqual(readDashboardMessage({ command: "runShell" }), undefined);
         assert.strictEqual(readDashboardMessage("refresh"), undefined);
         assert.strictEqual(readDashboardMessage(null), undefined);
-        const filter = readDashboardMessage({ command: "filter", query: "x".repeat(500), severity: 3 });
-        assert.deepStrictEqual(filter, { command: "filter", query: undefined, severity: undefined });
     });
 
-    test("view modes are whitelisted", () => {
-        assert.strictEqual(isDashboardViewMode("list"), true);
-        assert.strictEqual(isDashboardViewMode("byPackage"), true);
-        assert.strictEqual(isDashboardViewMode("grid"), false);
-        assert.strictEqual(isDashboardViewMode(undefined), false);
+    test("action ids are whitelisted", () => {
+        assert.strictEqual(isActionId("patch"), true);
+        assert.strictEqual(isActionId("minor"), true);
+        assert.strictEqual(isActionId("update:Newtonsoft.Json"), true);
+        assert.strictEqual(isActionId("replace:Microsoft.Azure.ServiceBus"), true);
+        assert.strictEqual(isActionId("update:"), false);
+        assert.strictEqual(isActionId("update:<b>"), false);
+        assert.strictEqual(isActionId("remove:Newtonsoft.Json"), false);
+        assert.strictEqual(isActionId(42), false);
     });
 
-    test("feed health HTML escapes source data", () => {
-        const html = feedHealthHtml({
-            sources: [{ name: "<b>evil</b>", url: "https://x/\"><script>", enabled: true }],
-            failures: [],
-            unmatched: [{ code: "NU1301", message: "<img onerror=x>", at: 1 }],
-            statuses: [{
-                name: "<b>evil</b>",
-                url: "https://x/\"><script>",
-                enabled: true,
-                failures: [{ code: "NU1301", message: "<i>down</i>", at: 1 }],
-                hints: ["<u>hint</u>"],
-            }],
-            credentialProviders: [],
-        }, false);
-        assert.ok(!/<script>|<b>|<img|<i>|<u>/.test(html));
-        assert.match(html, /Failed in the last scan/);
-        assert.match(html, /no network request of its own/);
-        assert.match(feedHealthHtml({ failures: [], unmatched: [], statuses: [], credentialProviders: [] }, true), /did not list the sources/);
+    test("the dashboard page has a nonce CSP and no inline script or style", () => {
+        const html = dashboardHtml({
+            cspSource: "vscode-resource:",
+            nonce: "abc123",
+            scriptUri: "vscode-resource:/media/dashboard.js\"><script>",
+            styleUri: "vscode-resource:/media/dashboard.css",
+        });
+        const csp = html.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1]?.replace(/&#39;/g, "'");
+        assert.strictEqual(csp, "default-src 'none'; style-src vscode-resource:; script-src 'nonce-abc123'; img-src vscode-resource:; font-src vscode-resource:");
+        assert.ok(!/unsafe-inline|unsafe-eval/.test(html));
+        assert.ok(!/\son[a-z]+=/i.test(html), "no inline event handlers");
+        assert.ok(!/\sstyle=/i.test(html), "no inline style attributes");
+        assert.ok(!/<style/i.test(html));
+        const scripts = html.match(/<script[^>]*>/g) ?? [];
+        assert.strictEqual(scripts.length, 1);
+        assert.match(scripts[0], /nonce="abc123"/);
+        assert.match(scripts[0], /src="vscode-resource:\/media\/dashboard\.js&quot;&gt;&lt;script&gt;"/);
+    });
+
+    test("the dashboard script and styles stay local", () => {
+        const media = path.resolve(__dirname, "../../media");
+        const script = fs.readFileSync(path.join(media, "dashboard.js"), "utf8");
+        const styles = fs.readFileSync(path.join(media, "dashboard.css"), "utf8");
+        assert.ok(!/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon|\beval\s*\(|new Function/.test(script));
+        assert.ok(!/https?:\/\//.test(styles));
+        assert.ok(!/@import/.test(styles));
+        assert.ok(/acquireVsCodeApi\(\)/.test(script));
     });
 
     test("markdown in package ids is escaped", () => {
