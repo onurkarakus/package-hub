@@ -17,6 +17,8 @@ export interface PackageEntry {
     severity?: Severity;
     advisoryUrl?: string;
     advisoryUrls?: string[];
+    /** Severity per advisory URL, when dotnet listed more than one. */
+    advisorySeverities?: Record<string, Severity>;
     deprecationReasons?: string[];
     alternativePackage?: string;
 }
@@ -35,6 +37,7 @@ export interface PackageInfo {
     severity?: Severity;
     advisoryUrl?: string;
     advisoryUrls?: string[];
+    advisorySeverities?: Record<string, Severity>;
     projects: string[];
     /** Projects that reference the package directly. */
     directProjects?: string[];

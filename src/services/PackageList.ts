@@ -1,6 +1,6 @@
 import * as path from "path";
 import { PackageEntry, PackageInfo } from "../models/PackageInfo";
-import { compareNuGetVersions, normalizeSeverity, severityRank } from "../utils/nugetAudit";
+import { compareNuGetVersions, normalizeSeverity, Severity, severityRank } from "../utils/nugetAudit";
 import { projectNameFromPath } from "./projectFiles";
 
 export type PackageListKind = "vulnerable" | "outdated" | "deprecated" | "installed";
@@ -228,6 +228,17 @@ function readEntry(
             .filter((url): url is string => typeof url === "string" && url.length > 0);
         entry.advisoryUrl = urls[0];
         entry.advisoryUrls = [...new Set(urls)];
+        const severities: Record<string, Severity> = {};
+        for (const item of sorted) {
+            const url = item?.advisoryurl || item?.advisoryUrl || item?.url;
+            const severity = normalizeSeverity(item?.severity);
+            if (typeof url === "string" && url && severity && !severities[url]) {
+                severities[url] = severity;
+            }
+        }
+        if (Object.keys(severities).length > 0) {
+            entry.advisorySeverities = severities;
+        }
     } else {
         entry.severity = normalizeSeverity(pkg.severity);
         const url = pkg.advisoryUrl || pkg.vulnerabilityUrl || pkg.advisoryurl;
@@ -277,6 +288,7 @@ export function aggregatePackages(entries: PackageEntry[], type: PackageListKind
         const requestedVersionByProject: Record<string, string> = {};
         const projectPaths: Record<string, string> = {};
         const advisoryUrls: string[] = [];
+        const advisorySeverities: Record<string, Severity> = {};
         let severity = lead.severity;
         let advisoryUrl = lead.advisoryUrl;
         let latestVersion: string | undefined;
@@ -295,6 +307,11 @@ export function aggregatePackages(entries: PackageEntry[], type: PackageListKind
             for (const url of entry.advisoryUrls ?? (entry.advisoryUrl ? [entry.advisoryUrl] : [])) {
                 if (!advisoryUrls.includes(url)) {
                     advisoryUrls.push(url);
+                }
+            }
+            for (const [url, value] of Object.entries(entry.advisorySeverities ?? {})) {
+                if (severityRank(value) > severityRank(advisorySeverities[url])) {
+                    advisorySeverities[url] = value;
                 }
             }
             if (entry.severity && severityRank(entry.severity) > severityRank(severity)) {
@@ -332,6 +349,7 @@ export function aggregatePackages(entries: PackageEntry[], type: PackageListKind
             severity,
             advisoryUrl,
             advisoryUrls,
+            ...(Object.keys(advisorySeverities).length > 0 ? { advisorySeverities } : {}),
             projects,
             directProjects,
             isTransitive: direct.length === 0,

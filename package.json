@@ -270,16 +270,6 @@
       {
         "title": "PackageHub",
         "properties": {
-          "packageHub.dashboardViewMode": {
-            "type": "string",
-            "enum": [
-              "list",
-              "byProject",
-              "byPackage"
-            ],
-            "default": "list",
-            "description": "%config.dashboardViewMode.description%"
-          },
           "packageHub.scanOnStartup": {
             "type": "boolean",
             "default": true,

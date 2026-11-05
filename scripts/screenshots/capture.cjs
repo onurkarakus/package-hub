@@ -315,6 +315,9 @@ const darkSession = async (code) => {
     await h.toggleSideBar();
     await h.run("packageHub.showHealthDashboard");
     await h.wait(3000);
+    // Open the Azure.Identity row so the shot shows the advisories and the path.
+    await dashboardFrame(page).locator('tr.row[data-id="Azure.Identity"]').click();
+    await h.wait(800);
     await h.shot("05-dashboard-dark");
     await h.part("dashboard", ".part.editor", { x: 0, y: 0, width: 1000, height: 640 });
     await h.run("workbench.action.closeAllEditors");
@@ -346,6 +349,10 @@ const darkSession = async (code) => {
   }
   await app.close();
 };
+
+// A webview page sits two frames deep: the webview host and its active frame.
+const dashboardFrame = (page) =>
+  page.frameLocator("iframe.webview.ready").first().frameLocator("#active-frame");
 
 const lightSession = async (code) => {
   const { app, page } = await launch(code, "Default Light Modern");

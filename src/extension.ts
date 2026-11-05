@@ -840,7 +840,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const showDashboardCommand = vscode.commands.registerCommand(
 		"packageHub.showHealthDashboard",
 		() => {
-			HealthDashboardPanel.createOrShow();
+			HealthDashboardPanel.createOrShow(context.extensionUri);
 		}
 	);
 
@@ -1414,6 +1414,7 @@ export function activate(context: vscode.ExtensionContext) {
 				logger.info("A scan is already running. It will run once more when it finishes.");
 				return;
 			}
+			HealthDashboardPanel.setScanning(true);
 			try {
 				do {
 					await performWorkspaceScan();
@@ -1421,6 +1422,9 @@ export function activate(context: vscode.ExtensionContext) {
 			} catch (error) {
 				scanGate.forceIdle();
 				throw error;
+			} finally {
+				HealthDashboardPanel.setScanning(false);
+				HealthDashboardPanel.refreshIfOpen();
 			}
 		}
 	);

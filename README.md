@@ -73,15 +73,17 @@ The status bar counts vulnerable, outdated and deprecated packages, and says whe
 
 ### Health Dashboard
 
-![The Health Dashboard: 9 vulnerable, 7 outdated, 3 deprecated, 0 conflicts, CPM enabled, the Highest patch and Highest minor buttons, a filter, and the vulnerable packages with their projects](docs/images/05-dashboard-dark.png)
+![The Health Dashboard for contoso-shop: health score 14 of 100, the KPI cards, the packages that need attention with the Azure.Identity row expanded with its advisories and path, the recommended actions, and the project heatmap](docs/images/05-dashboard-dark.png)
 
-`PackageHub: Show Health Dashboard` shows how many packages need attention, the NuGet sources in use, and whether Central Package Management is on.
+`PackageHub: Show Health Dashboard` gives the whole workspace in one place.
 
-- **Highest patch** and **Highest minor** update every package within its major version.
-- **Update to latest** on a row updates only that package.
-- Filter by package id or severity, and switch between **List**, **By project** and **By package**.
-- Version conflicts across projects and target frameworks get an **Align** button.
-- **Feed health** shows the same source status as the Feeds group.
+- **Health score** from 0 to 100. Vulnerable packages lower it by severity (critical 15, high 8, moderate 4, low 1, at most 60). Each outdated direct package takes 2 (at most 20), each deprecated one 4 (at most 12), and each failing feed 4 (at most 8). Hover the score to see the breakdown.
+- **Packages that need attention**: search, filter by vulnerable, outdated, deprecated, direct or transitive, and sort by any column. Expand a row for its advisories, the projects that use it, the path that brings a transitive package in, and the version that closes the advisories.
+- **Recommended actions**: the highest patch for every direct package, single updates where a patch is not enough, pins for transitive packages, and replacements for deprecated ones. Each shows the advisories it closes, the files it edits and the estimated score after it. **Preview** shows the update summary; **Apply** runs the same update as the rest of PackageHub, with the same confirmation.
+- **Projects** shows a heatmap of vulnerable, outdated and deprecated packages per project. Click a project to filter the table.
+- **Feeds** shows the same source status as the Feeds group.
+
+Everything on the dashboard comes from the last scan and the local advisory data. Opening it runs no `dotnet` command and makes no network request. It follows your color theme, including high contrast.
 
 ![The Health Dashboard in the Light Modern theme](docs/images/05-dashboard-light.png)
 
@@ -164,7 +166,6 @@ When you update a package, the new version is written to `Directory.Packages.pro
 | `packageHub.includePrerelease` | `false` | Adds prereleases to the next outdated list. The vulnerability scan stays the same |
 | `packageHub.minimumSeverity` | `low` | Lowest severity PackageHub lists: `low`, `moderate`, `high` or `critical`. It does not change `NuGetAuditLevel` in the project |
 | `packageHub.minimumReleaseAge` | `0` | How many days old a latest version must be before it is preferred. `0` is off. The highest-patch suggestion ignores this. Publish dates come from the local NuGet cache |
-| `packageHub.dashboardViewMode` | `list` | Dashboard layout: `list`, `byProject` or `byPackage` |
 | `packageHub.ignoredPackages` | `[]` | Package ids hidden from the lists |
 | `packageHub.onlineLookups` | `false` | Lets PackageHub ask nuget.org itself for advisory ranges and publish dates that are not in the local cache |
 | `packageHub.timeouts.listSeconds` | `120` | Timeout for `dotnet list package` and other quick commands |
