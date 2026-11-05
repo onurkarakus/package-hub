@@ -22,7 +22,6 @@
   "command.openWalkthrough": "PackageHub: Get Started",
   "viewsContainer.packageHub.title": "PackageHub",
   "view.packageHubExplorer.name": "Package Health",
-  "config.dashboardViewMode.description": "Dashboard layout: list, by project, or by package.",
   "config.scanOnStartup.description": "Scan packages when the workspace opens.",
   "config.includePrerelease.description": "Include prereleases in the next outdated list. Off by default. The vulnerability scan is unchanged. Applied on the next scan.",
   "config.minimumSeverity.description": "Lowest severity PackageHub reports. Does not change NuGetAuditLevel in the project.",

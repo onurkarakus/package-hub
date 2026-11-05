@@ -44,15 +44,3 @@ export function minimumReleaseAgeDays(): number {
     const value = config().get<number>("minimumReleaseAge");
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
-
-export const DASHBOARD_VIEW_MODES = ["list", "byProject", "byPackage"] as const;
-export type DashboardViewMode = (typeof DASHBOARD_VIEW_MODES)[number];
-
-export function isDashboardViewMode(value: unknown): value is DashboardViewMode {
-    return typeof value === "string" && (DASHBOARD_VIEW_MODES as readonly string[]).includes(value);
-}
-
-export function dashboardViewMode(): DashboardViewMode {
-    const value = config().get<string>("dashboardViewMode");
-    return isDashboardViewMode(value) ? value : "list";
-}

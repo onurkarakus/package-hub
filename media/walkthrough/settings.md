@@ -11,5 +11,4 @@ The defaults work for most projects. These three change what PackageHub lists:
 Other settings:
 
 - `packageHub.scanOnStartup` scans when the folder opens (`true`).
-- `packageHub.dashboardViewMode` sets the dashboard layout: `list`, `byProject` or `byPackage`.
 - `packageHub.ignoredPackages` hides package ids from the lists. **Ignore** on a package adds it for you.
