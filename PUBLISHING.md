@@ -8,7 +8,8 @@ PackageHub is published to the Visual Studio Marketplace and to Open VSX (used b
 2. `npm ci`
 3. `npm run pretest` (types, lint, build)
 4. `xvfb-run -a npm test` (current VS Code) and `xvfb-run -a npm run test:min` (the oldest VS Code in `engines.vscode`). Drop `xvfb-run -a` on a machine with a display.
-5. `npm run package:vsix` builds `package-hub-<version>.vsix`. Install it once by hand and check a scan.
+5. The README uses absolute `raw.githubusercontent.com` image URLs, so the images show on the Marketplace only while the GitHub repository is public.
+6. `npm run package:vsix` builds `package-hub-<version>.vsix`. Install it once by hand and check a scan.
 
 ## Visual Studio Marketplace
 
