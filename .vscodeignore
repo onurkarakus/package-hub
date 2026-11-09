@@ -5,6 +5,7 @@ node_modules/**
 src/**
 samples/**
 docs/**
+!docs/images/**
 **/*.map
 **/*.ts
 .eslintrc*
@@ -19,3 +20,6 @@ vsc-extension-quickstart.md
 *.vsix
 scripts/**
 PUBLISHING.md
+CONTRIBUTING.md
+.github/**
+backups/**
