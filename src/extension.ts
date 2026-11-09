@@ -52,6 +52,7 @@ import { planVersionEdit, ProjectEvaluation, setPackageVersionInXml, EditPlan } 
 import { Debouncer, WriteQueue } from "./services/WriteQueue";
 import { buildUpdateSummary, UpdateSummaryAdvisory, UpdateSummaryProject } from "./services/UpdateSummary";
 import { highestPatchFromLocal } from "./services/PatchFallback";
+import { projectScope, withoutDowngrades } from "./services/UpdateScope";
 
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
@@ -1431,7 +1432,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const updateCommand = vscode.commands.registerCommand(
 		"packageHub.updateVulnerable",
-		async (args?: { packageId?: unknown; version?: unknown; projectName?: unknown }) => {
+		async (args?: { packageId?: unknown; version?: unknown; projectName?: unknown; projects?: unknown }) => {
 			const packageId = args?.packageId;
 			if (!isValidPackageId(packageId)) {
 				vscode.window.showWarningMessage("The package update details are missing or invalid.");
@@ -1443,11 +1444,15 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 			const projectName = typeof args?.projectName === "string" ? args.projectName : undefined;
+			const scope = projectScope(args?.projects);
 
 			// Every project the scan saw this package in, from all lists.
 			let related = packageProjects(packageId);
 			if (projectName) {
 				related = related.filter((item) => item.name.toLowerCase() === projectName.toLowerCase());
+			}
+			if (scope) {
+				related = related.filter((item) => scope.has(item.name.toLowerCase()));
 			}
 
 			const allProjects = await workspaceScanner.findProjects();
@@ -1455,9 +1460,22 @@ export function activate(context: vscode.ExtensionContext) {
 				allProjects.find((project) => item.path
 					? pathKey(project.fsPath) === pathKey(item.path)
 					: workspaceScanner.getProjectName(project).toLowerCase() === item.name.toLowerCase());
-			const targets = related
+			const matched = related
 				.map((item) => ({ ...item, uri: resolveUri(item) }))
 				.filter((item): item is typeof item & { uri: vscode.Uri } => !!item.uri);
+			// Never move a project to an older version than it already has.
+			const { kept: targets, skipped: newerProjects } = withoutDowngrades(
+				matched,
+				version,
+				(target) => ScanState.resolvedVersionIn(packageId, target.name) || target.version
+			);
+
+			if (targets.length === 0 && newerProjects.length > 0) {
+				vscode.window.showInformationMessage(
+					`${packageId} is already at ${version} or newer in ${newerProjects.map((item) => item.name).join(", ")}. Nothing was updated.`
+				);
+				return;
+			}
 
 			if (targets.length === 0) {
 				vscode.window.showWarningMessage(
@@ -1513,6 +1531,9 @@ export function activate(context: vscode.ExtensionContext) {
 				releaseAgeNotice: version ? releaseAgeNotice(packageId, version) : undefined,
 				youngerThanAgeGate: version ? !latestReleasePreferred(packageId, version) : false,
 			});
+			if (newerProjects.length > 0) {
+				summary.lines.push(`Left as is, already newer than ${version}: ${newerProjects.map((item) => `${item.name} ${item.from}`).join(", ")}.`);
+			}
 
 			const confirm = await vscode.window.showWarningMessage(
 				summary.heading,
