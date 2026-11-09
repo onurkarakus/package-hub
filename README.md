@@ -79,7 +79,7 @@ The status bar counts vulnerable, outdated and deprecated packages, and says whe
 
 - **Health score** from 0 to 100. Vulnerable packages lower it by severity (critical 15, high 8, moderate 4, low 1, at most 60). Each outdated direct package takes 2 (at most 20), each deprecated one 4 (at most 12), and each failing feed 4 (at most 8). Hover the score to see the breakdown.
 - **Packages that need attention**: search, filter by vulnerable, outdated, deprecated, direct or transitive, and sort by any column. Expand a row for its advisories, the projects that use it, the path that brings a transitive package in, and the version that closes the advisories.
-- **Recommended actions**: the highest patch for every direct package, single updates where a patch is not enough, pins for transitive packages, and replacements for deprecated ones. Each shows the advisories it closes, the files it edits and the estimated score after it. **Preview** shows the update summary; **Apply** runs the same update as the rest of PackageHub, with the same confirmation.
+- **Recommended actions**: the highest patch for every direct package, single updates where a patch is not enough, pins for transitive packages, and replacements for deprecated ones. Each shows the advisories it closes, the projects and files it edits, and the estimated score after it when the score goes up. **Preview** shows the update summary; **Apply** runs the same update as the rest of PackageHub, with the same confirmation.
 - **Projects** shows a heatmap of vulnerable, outdated and deprecated packages per project. Click a project to filter the table.
 - **Feeds** shows the same source status as the Feeds group.
 

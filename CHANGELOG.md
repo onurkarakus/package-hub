@@ -6,6 +6,17 @@
 
 - New Health Dashboard: a health score with its breakdown, KPI cards, a package table you can search, filter, sort and expand (advisories, projects, the path that brings a transitive package in), recommended actions with Preview and Apply, a project heatmap and the feed status. It follows the color theme and is built from the last scan and local advisory data only.
 
+### Fixed
+
+- Dashboard updates only write the projects where the package is affected and older than the suggested version. `packageHub.updateVulnerable` never moves a project to an older version and lists the projects it leaves as they are.
+- A transitive warning whose origins are all missing from the resolved graph no longer gets a suggested pin or a Pin button.
+- The project heatmap counts each finding only in the projects where that report saw it.
+- Vulnerable packages without an advisory link count in the score, the Vulnerable card and the Vulnerable filter.
+- Preview lists every project the update writes, including the transitive ones that get a direct reference.
+- The score estimate for the patch action keeps the advisories a patch leaves open, at their own severity, and the transitive occurrences the patch does not edit.
+- The Package column keeps a minimum width; the table scrolls sideways in a narrow panel.
+- Expanding a row with Enter or Space keeps the focus on that row.
+
 ### Removed
 
 - The `packageHub.dashboardViewMode` setting. The table and the project heatmap replace the List, By project and By package layouts.
