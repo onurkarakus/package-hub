@@ -3,7 +3,7 @@
   "publisher": "onurkarakus",
   "displayName": "PackageHub",
   "description": "See vulnerable, outdated and deprecated NuGet packages in your C# and F# projects, and apply safe updates in a few clicks. Local-first, no telemetry.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "author": {
     "name": "Onur Karakuş"
