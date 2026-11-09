@@ -178,7 +178,8 @@ body.vscode-high-contrast .tint, body.vscode-high-contrast-light .tint { outline
 
 .table-wrap { overflow: auto; min-height: 0; flex: 1; }
 @media not all and (min-height: 760px) { .table-wrap { max-height: 70vh; } .actions-body { max-height: 70vh; } }
-table.pk { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+/* The fixed columns take 752px; the rest keeps at least 220px for the package name. Below that the wrapper scrolls. */
+table.pk { width: 100%; min-width: 972px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 table.pk th {
   position: sticky; top: 0; z-index: 2; background: var(--ph-card); text-align: left; font-weight: 600; font-size: 11px; letter-spacing: 0.04em;
   text-transform: uppercase; color: var(--ph-muted); padding: 8px 10px; border-bottom: 1px solid var(--ph-border); white-space: nowrap;
