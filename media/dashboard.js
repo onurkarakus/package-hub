@@ -270,7 +270,15 @@
           ? '<tr><td colspan="8" class="empty"><strong>Nothing needs attention</strong>No vulnerable, outdated or deprecated packages in the last scan.</td></tr>'
           : '<tr><td colspan="8" class="empty">No packages match the current filters.</td></tr>';
     }
+    // Replacing the rows drops the focused element. Put focus back on the
+    // same row so Enter and Space keep working from the keyboard.
+    const active = document.activeElement;
+    const focusedId = active instanceof HTMLElement && active.matches("tr.row") ? active.getAttribute("data-id") : null;
     $("rows").innerHTML = body;
+    if (focusedId !== null) {
+      const row = Array.prototype.find.call($("rows").querySelectorAll("tr.row"), (el) => el.getAttribute("data-id") === focusedId);
+      if (row) { row.focus(); }
+    }
     document.querySelectorAll("th[data-sort]").forEach((th) => {
       const on = th.getAttribute("data-sort") === ui.sort;
       th.classList.toggle("is-sorted", on);
