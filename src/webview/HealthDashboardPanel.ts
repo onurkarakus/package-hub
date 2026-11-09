@@ -361,12 +361,18 @@ export class HealthDashboardPanel {
       case "refresh":
         void vscode.commands.executeCommand("packageHub.scanWorkspace");
         break;
-      case "updatePackage":
+      case "updatePackage": {
+        // Scope the row button to the occurrences the page showed, so the
+        // update does not touch projects that are already newer.
+        const pkg = this._state?.packages.find((item) => item.id.toLowerCase() === message.packageId.toLowerCase());
+        const scoped = pkg && message.version && pkg.suggested === message.version;
         void vscode.commands.executeCommand("packageHub.updateVulnerable", {
           packageId: message.packageId,
           version: message.version,
+          ...(scoped ? { projects: pkg.updateIn.map((target) => target.name) } : {}),
         });
         break;
+      }
       case "showDependencies":
         void vscode.commands.executeCommand("packageHub.showDependencyGraph", { packageId: message.packageId });
         break;
@@ -401,6 +407,7 @@ export class HealthDashboardPanel {
           await vscode.commands.executeCommand("packageHub.updateVulnerable", {
             packageId: update.packageId,
             version: update.to,
+            projects: action.projects,
           });
         }
         break;

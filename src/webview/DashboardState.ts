@@ -27,10 +27,22 @@ export interface DashboardWhyNode {
     kind: "project" | "package";
 }
 
+export interface DashboardTarget {
+    name: string;
+    from: string;
+    relation: "direct" | "transitive";
+}
+
 export interface DashboardPackage {
     id: string;
     current: string;
     suggested?: string;
+    /**
+     * The projects an update to the suggested version writes: the affected
+     * occurrences that are older than it. Projects already on the suggested
+     * version or a newer one are left out, so an update never downgrades.
+     */
+    updateIn: DashboardTarget[];
     change: DashboardChange;
     latest?: string;
     highestPatch?: string;
@@ -38,6 +50,8 @@ export interface DashboardPackage {
     directIn: string[];
     transitiveIn: string[];
     severity: ScoreSeverity | "none";
+    /** dotnet listed the package as vulnerable, with or without advisory links. */
+    vulnerable: boolean;
     advisories: DashboardAdvisory[];
     outdated: boolean;
     deprecated?: string;
@@ -232,6 +246,26 @@ function directNames(pkg: PackageInfo): string[] {
     return pkg.isTransitive ? [] : (pkg.projects || []).filter((name) => !transitive.has(key(name)));
 }
 
+function versionIn(pkg: PackageInfo, project: string): string {
+    const found = Object.entries(pkg.versionByProject || {}).find(([name]) => key(name) === key(project));
+    return found?.[1] || pkg.version;
+}
+
+/** Projects where every recorded origin of the warning is missing from the resolved graph. */
+function staleProjects(pkg: PackageInfo | undefined): Set<string> {
+    const byProject = new Map<string, boolean>();
+    for (const origin of pkg?.transitiveOrigins || []) {
+        const name = key(origin.project);
+        byProject.set(name, (byProject.get(name) ?? true) && origin.absentFromGraph);
+    }
+    return new Set([...byProject].filter(([, stale]) => stale).map(([name]) => name));
+}
+
+function onlyStaleOrigins(pkg: PackageInfo | undefined): boolean {
+    const origins = pkg?.transitiveOrigins || [];
+    return origins.length > 0 && origins.every((origin) => origin.absentFromGraph);
+}
+
 function advisoriesOf(pkg: PackageInfo): { url: string; severity: ScoreSeverity | "unknown" }[] {
     const urls = uniq(pkg.advisoryUrls?.length ? pkg.advisoryUrls : pkg.advisoryUrl ? [pkg.advisoryUrl] : []);
     const fallback: ScoreSeverity | "unknown" = scoreSeverity(pkg.severity) ?? "unknown";
@@ -320,12 +354,21 @@ function buildPackage(input: DashboardInput, item: Merged): DashboardPackage {
         .map((origin) => origin.broughtBy || "")
         .filter(Boolean));
 
+    // A transitive warning whose origins are all missing from the resolved
+    // graph may be left over from an earlier restore. Pinning it would add a
+    // direct reference for a package the build no longer uses.
+    const stale = kind === "transitive" && onlyStaleOrigins(item.vulnerable);
+
     let suggested: string | undefined;
-    if (rawAdvisories.length > 0) {
+    if (stale) {
+        suggested = undefined;
+    } else if (rawAdvisories.length > 0) {
         suggested = fixingVersion(input, lead, rawAdvisories.map((advisory) => advisory.url), highestPatch, latest);
     } else if (item.outdated) {
         suggested = highestPatch ?? latest;
     }
+
+    const updateIn = suggested ? targetsFor(item, directIn, suggested) : [];
 
     let change = toChange(current, suggested);
     if (!suggested && alternative) {
@@ -350,6 +393,7 @@ function buildPackage(input: DashboardInput, item: Merged): DashboardPackage {
         id: lead.id,
         current,
         suggested,
+        updateIn,
         change,
         latest,
         highestPatch,
@@ -357,14 +401,47 @@ function buildPackage(input: DashboardInput, item: Merged): DashboardPackage {
         directIn,
         transitiveIn,
         severity: item.vulnerable && worst === "none" ? "low" : worst,
+        vulnerable: !!item.vulnerable,
         advisories,
         outdated: !!item.outdated,
         deprecated,
         alternative,
         parents,
         why: whyPaths(lead, directIn),
-        note: packageNote(input, lead.id, kind, suggested, highestPatch, advisories, transitiveIn, parents, deprecated, alternative),
+        note: stale
+            ? {
+                tone: "warn",
+                text: `dotnet still reports ${lead.id}, but it is not in the resolved package graph of ${transitiveIn.join(", ")}. `
+                    + "The warning may be left over from an earlier restore, so no pin is suggested. Restore and scan again.",
+            }
+            : packageNote(input, lead.id, kind, suggested, highestPatch, advisories, pinnedIn(updateIn, transitiveIn), parents, deprecated, alternative, !!item.vulnerable),
     };
+}
+
+function pinnedIn(updateIn: DashboardTarget[], transitiveIn: string[]): string[] {
+    const pinned = updateIn.filter((target) => target.relation === "transitive").map((target) => target.name);
+    return pinned.length > 0 ? pinned : transitiveIn;
+}
+
+/**
+ * The occurrences an update to `version` should write. For a vulnerable
+ * package these are the projects dotnet listed it as vulnerable in; for an
+ * outdated one, the projects that reference it directly. Occurrences already
+ * on `version` or newer, and transitive ones whose warning is stale, are left
+ * out.
+ */
+function targetsFor(item: Merged, directIn: string[], version: string): DashboardTarget[] {
+    const source = item.vulnerable ?? item.outdated;
+    if (!source) {
+        return [];
+    }
+    const stale = staleProjects(item.vulnerable);
+    const names = item.vulnerable ? source.projects || [] : directNames(source);
+    const isDirect = (name: string) => directIn.some((direct) => key(direct) === key(name));
+    return uniq(names)
+        .filter((name) => isDirect(name) || !stale.has(key(name)))
+        .map((name) => ({ name, from: versionIn(source, name), relation: isDirect(name) ? "direct" as const : "transitive" as const }))
+        .filter((target) => newer(version, target.from));
 }
 
 function packageNote(
@@ -377,8 +454,15 @@ function packageNote(
     transitiveIn: string[],
     parents: string[],
     deprecated: string | undefined,
-    alternative: string | undefined
+    alternative: string | undefined,
+    vulnerable: boolean
 ): DashboardPackage["note"] {
+    if (vulnerable && advisories.length === 0) {
+        return {
+            tone: "warn",
+            text: `dotnet lists ${id} as vulnerable but gives no advisory link, so PackageHub cannot check which version fixes it.`,
+        };
+    }
     if (advisories.length > 0) {
         if (!suggested) {
             return {
@@ -419,18 +503,23 @@ function buildProjects(input: DashboardInput, packages: DashboardPackage[]): Das
         ...packages.flatMap((pkg) => [...pkg.directIn, ...pkg.transitiveIn]),
     ]).sort((a, b) => a.localeCompare(b));
     const has = (list: string[], name: string) => list.some((item) => key(item) === key(name));
+    // Each count comes from its own report, so a package that is vulnerable
+    // in one project and only outdated in another is not counted as
+    // vulnerable in both.
+    const count = (list: PackageInfo[], projectsOf: (pkg: PackageInfo) => string[], name: string) =>
+        new Set(list.filter((pkg) => pkg?.id && has(projectsOf(pkg), name)).map((pkg) => key(pkg.id))).size;
     return names.map((name) => ({
         name,
-        direct: input.installed.filter((pkg) => has(directNames(pkg), name)).length,
-        vulnerable: packages.filter((pkg) => pkg.advisories.length > 0 && (has(pkg.directIn, name) || has(pkg.transitiveIn, name))).length,
-        outdated: packages.filter((pkg) => pkg.outdated && has(pkg.directIn, name)).length,
-        deprecated: packages.filter((pkg) => pkg.deprecated && (has(pkg.directIn, name) || has(pkg.transitiveIn, name))).length,
+        direct: count(input.installed, directNames, name),
+        vulnerable: count(input.vulnerable, (pkg) => pkg.projects || [], name),
+        outdated: count(input.outdated, directNames, name),
+        deprecated: count(input.deprecated, (pkg) => pkg.projects || [], name),
     }));
 }
 
 function scoreOf(packages: DashboardPackage[], feedIssues: number): HealthScore {
     return computeHealthScore({
-        vulnerableSeverities: packages.filter((pkg) => pkg.advisories.length > 0).map((pkg) => pkg.severity),
+        vulnerableSeverities: packages.filter((pkg) => pkg.vulnerable).map((pkg) => pkg.severity),
         outdatedDirect: packages.filter((pkg) => pkg.outdated && pkg.kind === "direct").length,
         deprecatedDirect: packages.filter((pkg) => pkg.deprecated && pkg.kind === "direct").length,
         feedIssues,
@@ -459,10 +548,7 @@ function summaryFor(input: DashboardInput, pkg: DashboardPackage, version: strin
     const summary = buildUpdateSummary({
         packageId: pkg.id,
         targetVersion: version,
-        projects: [
-            ...pkg.directIn.map((name) => ({ name, fromVersion: pkg.current, relation: "direct" as const })),
-            ...(pkg.kind === "transitive" ? pkg.transitiveIn.map((name) => ({ name, fromVersion: pkg.current, relation: "transitive" as const })) : []),
-        ],
+        projects: pkg.updateIn.map((target) => ({ name: target.name, fromVersion: target.from, relation: target.relation })),
         advisories: pkg.advisories.map((advisory) => ({
             url: advisory.url,
             label: advisory.id,
@@ -474,21 +560,63 @@ function summaryFor(input: DashboardInput, pkg: DashboardPackage, version: strin
     return { heading: summary.heading, lines: summary.lines };
 }
 
+function worstOf(severities: (ScoreSeverity | "unknown")[]): ScoreSeverity | "none" {
+    let worst: ScoreSeverity | "none" = "none";
+    for (const value of severities) {
+        const severity: ScoreSeverity = value === "unknown" ? "low" : value;
+        if (worst === "none" || severityRank(severity) > severityRank(worst)) {
+            worst = severity;
+        }
+    }
+    return worst;
+}
+
+/**
+ * The worst severity left in a package after "Highest patch". That command
+ * only edits direct references, so a direct occurrence that the patch moves
+ * keeps the advisories the patch does not close (open or unknown), and every
+ * other occurrence keeps all of its advisories. Without advisory links
+ * nothing is known to be fixed, so the reported severity stays.
+ */
+function severityAfterPatch(input: DashboardInput, pkg: DashboardPackage): ScoreSeverity | "none" {
+    if (!pkg.vulnerable) {
+        return "none";
+    }
+    if (pkg.advisories.length === 0) {
+        return pkg.severity;
+    }
+    const patch = pkg.highestPatch!;
+    const report = input.vulnerable.find((item) => key(item.id) === key(pkg.id));
+    const occurrences = uniq(report?.projects?.length ? report.projects : [...pkg.directIn, ...pkg.transitiveIn]);
+    const remaining = pkg.advisories.filter((advisory) => input.verdict(pkg.id, advisory.url, patch) !== "closed");
+    const left: (ScoreSeverity | "unknown")[] = [];
+    for (const name of occurrences) {
+        const from = report ? versionIn(report, name) : pkg.current;
+        const direct = pkg.directIn.some((project) => key(project) === key(name));
+        const patched = direct && newer(patch, from) && toChange(from, patch) === "patch";
+        left.push(...(patched ? remaining : pkg.advisories).map((advisory) => advisory.severity));
+    }
+    if (occurrences.length === 0) {
+        left.push(...remaining.map((advisory) => advisory.severity));
+    }
+    return worstOf(left);
+}
+
 function buildActions(input: DashboardInput, packages: DashboardPackage[], score: HealthScore, feedIssues: number): DashboardAction[] {
     const actions: DashboardAction[] = [];
     const direct = packages.filter((pkg) => pkg.kind === "direct");
 
     // 1. Every direct package with a newer patch. This is what "Highest patch" writes.
-    const patchable = direct.filter((pkg) => pkg.highestPatch && (pkg.outdated || pkg.advisories.length > 0));
+    const patchable = direct.filter((pkg) => pkg.highestPatch && (pkg.outdated || pkg.vulnerable));
     if (patchable.length > 0) {
         const closes = patchable.reduce((sum, pkg) => sum + closedCount(pkg, pkg.highestPatch!, input), 0);
         const projected = packages.map((pkg) => {
             if (!patchable.includes(pkg)) {
                 return pkg;
             }
-            const fixed = pkg.advisories.length > 0 && closedCount(pkg, pkg.highestPatch!, input) === pkg.advisories.length;
+            const severity = severityAfterPatch(input, pkg);
             const reachesLatest = !pkg.latest || pkg.latest === pkg.highestPatch;
-            return { ...pkg, advisories: fixed ? [] : pkg.advisories, outdated: pkg.outdated && !reachesLatest };
+            return { ...pkg, vulnerable: severity !== "none", severity, outdated: pkg.outdated && !reachesLatest };
         });
         const after = scoreOf(projected, feedIssues).score;
         const lines = patchable.map((pkg) => {
@@ -523,7 +651,7 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
 
     // 2. Vulnerable direct packages that need more than a patch.
     const bigger = direct
-        .filter((pkg) => pkg.advisories.length > 0 && pkg.suggested && pkg.suggested !== pkg.highestPatch)
+        .filter((pkg) => pkg.advisories.length > 0 && pkg.suggested && pkg.suggested !== pkg.highestPatch && pkg.updateIn.length > 0)
         .sort(bySeverity)
         .slice(0, MAX_SINGLE_ACTIONS);
     for (const pkg of bigger) {
@@ -539,7 +667,7 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
                 : `The first version that closes ${pkg.advisories.length === 1 ? "the advisory" : "every advisory"}.`,
             updates: [{ packageId: pkg.id, from: pkg.current, to: version, change: pkg.change }],
             closes,
-            projects: pkg.directIn,
+            projects: pkg.updateIn.map((target) => target.name),
             files: filesFor(input, findInfo(input, pkg.id)),
             button: "Review & apply",
             preview: summaryFor(input, pkg, version),
@@ -548,7 +676,7 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
 
     // 3. Vulnerable transitive packages: pin the fixed version.
     const pins = packages
-        .filter((pkg) => pkg.kind === "transitive" && pkg.advisories.length > 0 && pkg.suggested)
+        .filter((pkg) => pkg.kind === "transitive" && pkg.advisories.length > 0 && pkg.suggested && pkg.updateIn.length > 0)
         .sort(bySeverity)
         .slice(0, MAX_SINGLE_ACTIONS);
     for (const pkg of pins) {
@@ -563,7 +691,7 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
                 : "Transitive. A direct reference pins the fixed version.",
             updates: [{ packageId: pkg.id, from: pkg.current, to: version, change: pkg.change }],
             closes: closedCount(pkg, version, input),
-            projects: pkg.transitiveIn,
+            projects: pkg.updateIn.map((target) => target.name),
             files: input.cpm && input.centralFiles.length > 0 ? input.centralFiles : [],
             button: "Review & pin",
             preview: summaryFor(input, pkg, version),

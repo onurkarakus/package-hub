@@ -102,7 +102,7 @@
   // Summary cards -----------------------------------------------------------
   function renderKpis() {
     const pk = state.packages;
-    const vuln = pk.filter((p) => p.advisories.length > 0);
+    const vuln = pk.filter((p) => p.vulnerable);
     const vDirect = vuln.filter((p) => p.kind === "direct").length;
     const outd = pk.filter((p) => p.outdated && p.kind === "direct");
     const by = (c) => outd.filter((p) => p.change === c).length;
@@ -149,7 +149,7 @@
   function projectCount(p) { return p.directIn.length + p.transitiveIn.length; }
   function statusRank(p) {
     const sev = SEV_RANK[p.severity] || 0;
-    if (p.advisories.length > 0) {
+    if (p.vulnerable) {
       return 1000 + sev * 100 + projectCount(p) * 2 + p.advisories.length;
     }
     return (p.deprecated && p.kind === "direct" ? 20 : 0) + (p.outdated ? 10 : 0);
@@ -157,7 +157,7 @@
   function matches(p) {
     if (ui.kind !== "all" && p.kind !== ui.kind) { return false; }
     const f = ui.filter;
-    if (f === "vulnerable" && p.advisories.length === 0) { return false; }
+    if (f === "vulnerable" && !p.vulnerable) { return false; }
     if (f === "outdated" && !p.outdated) { return false; }
     if (f === "deprecated" && !p.deprecated) { return false; }
     if (f && f.indexOf("project:") === 0) {
@@ -186,7 +186,7 @@
     return '<span class="badge tint ' + esc(p.change) + '">' + label + "</span>";
   }
   function sevPill(p) {
-    if (p.severity === "none" || p.advisories.length === 0) { return '<span class="sev none">—</span>'; }
+    if (p.severity === "none" || !p.vulnerable) { return '<span class="sev none">—</span>'; }
     const n = p.advisories.length;
     return '<span class="sev tint ' + esc(p.severity) + '"><span class="pip"></span>' + cap(p.severity) + (n > 1 ? ' <span class="n">×' + n + "</span>" : "") + "</span>";
   }
@@ -225,7 +225,7 @@
         '<span class="range">Installed ' + esc(p.current) + "</span>" +
         '<a href="#" data-action="openAdvisory" data-url="' + esc(a.url) + '">' + esc(shortUrl(a.url)) + icon("ext", "sm") + "</a>" +
         verdictLine(p, a) + "</div>").join("")
-      : '<div class="muted">No known advisories.</div>';
+      : '<div class="muted">' + (p.vulnerable ? "dotnet lists this package as vulnerable without an advisory link." : "No known advisories.") + "</div>";
     const projects = p.directIn.map((n) => [n, "direct"]).concat(p.transitiveIn.map((n) => [n, "transitive"]));
     const plist = '<ul class="plist">' + projects.map((x) =>
       "<li><span class=\"ico\">" + icon("proj", "sm") + "</span>" + esc(x[0]) + '<span class="kind ' + x[1] + '">' + x[1] + "</span></li>").join("") + "</ul>";
@@ -254,7 +254,7 @@
     $("row-count").textContent = String(rows.length);
     let body = rows.map((p) => {
       const open = ui.open === p.id;
-      const flags = (p.deprecated ? '<span class="flag dep">deprecated</span>' : "") + (p.outdated && p.advisories.length === 0 ? '<span class="flag out">outdated</span>' : "");
+      const flags = (p.deprecated ? '<span class="flag dep">deprecated</span>' : "") + (p.outdated && !p.vulnerable ? '<span class="flag out">outdated</span>' : "");
       const extra = p.kind === "direct" && p.transitiveIn.length ? '<span class="kind-extra">+' + p.transitiveIn.length + " trans.</span>" : "";
       return '<tr class="row' + (open ? " is-open" : "") + '" tabindex="0" data-id="' + esc(p.id) + '" aria-expanded="' + open + '">' +
         '<td><span class="chev">' + icon("chev", "sm") + "</span></td>" +

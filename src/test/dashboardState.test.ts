@@ -192,7 +192,8 @@ suite("Dashboard state", () => {
         ]);
         assert.strictEqual(patch.closes, 2);
         assert.deepStrictEqual(patch.files, ["Directory.Packages.props"]);
-        assert.deepStrictEqual(patch.score, { from: 66, to: 74 });
+        // System.Text.Json stays vulnerable in Shop.Api, which the patch does not edit.
+        assert.strictEqual(patch.score, undefined);
         assert.ok(patch.preview.lines.some((line) => /Newtonsoft\.Json 12\.0\.1 → 12\.0\.3 · 1 stays open/.test(line)));
 
         const major = findAction(state, "update:Newtonsoft.Json")!;
@@ -258,6 +259,147 @@ suite("Dashboard state", () => {
         const state = buildDashboardState(input({ auditDataGap: true, unreadableProjects: ["Legacy.vbproj"] }));
         assert.strictEqual(state.notices.length, 2);
         assert.match(state.notices[1], /Legacy\.vbproj/);
+    });
+
+    test("an update is scoped to older occurrences and never downgrades a newer one", () => {
+        const base = input();
+        const nj = base.vulnerable[0];
+        // Only Shop.Api is vulnerable; Shop.Worker already has 13.0.4.
+        base.installed[0] = pkg({
+            id: "Newtonsoft.Json", version: "12.0.1", projects: ["Shop.Api", "Shop.Worker"], directProjects: ["Shop.Api", "Shop.Worker"],
+            versionByProject: { "Shop.Api": "12.0.1", "Shop.Worker": "13.0.4" },
+        });
+        nj.versionByProject = { "Shop.Api": "12.0.1" };
+        const state = buildDashboardState(base);
+        const package_ = state.packages.find((p) => p.id === "Newtonsoft.Json")!;
+        assert.strictEqual(package_.suggested, "13.0.1");
+        assert.deepStrictEqual(package_.updateIn, [{ name: "Shop.Api", from: "12.0.1", relation: "direct" }]);
+        assert.deepStrictEqual(findAction(state, "update:Newtonsoft.Json")!.projects, ["Shop.Api"]);
+    });
+
+    test("occurrences already at the suggested version or newer are not targeted", () => {
+        const base = input();
+        base.vulnerable[1].versionByProject = { "Shop.Core": "8.0.0", "Shop.Api": "8.0.6" };
+        const stj = buildDashboardState(base).packages.find((p) => p.id === "System.Text.Json")!;
+        assert.deepStrictEqual(stj.updateIn.map((t) => t.name), ["Shop.Core"]);
+    });
+
+    test("a stale transitive warning gets no suggested pin", () => {
+        const base = input();
+        base.vulnerable[2].transitiveOrigins = [{ project: "Shop.Data", absentFromGraph: true }];
+        const state = buildDashboardState(base);
+        const identity = state.packages.find((p) => p.id === "Azure.Identity")!;
+        assert.strictEqual(identity.suggested, undefined);
+        assert.deepStrictEqual(identity.updateIn, []);
+        assert.match(identity.note!.text, /not in the resolved package graph/);
+        assert.strictEqual(findAction(state, "pin:Azure.Identity"), undefined);
+        // It is still a known vulnerability for the score.
+        assert.strictEqual(identity.vulnerable, true);
+        assert.strictEqual(state.score.vulnerable, 24);
+    });
+
+    test("a direct package does not pin into projects whose transitive warning is stale", () => {
+        const base = input();
+        base.vulnerable[1].transitiveOrigins = [{ project: "Shop.Api", absentFromGraph: true }];
+        const stj = buildDashboardState(base).packages.find((p) => p.id === "System.Text.Json")!;
+        assert.strictEqual(stj.suggested, "8.0.6");
+        assert.deepStrictEqual(stj.updateIn.map((t) => t.name), ["Shop.Core"]);
+    });
+
+    test("heatmap counts come from each project's own report", () => {
+        const base = input();
+        // Newtonsoft.Json is vulnerable only in Shop.Api but outdated in Shop.Worker too.
+        base.outdated[0] = pkg({
+            id: "Newtonsoft.Json", version: "12.0.1", latestVersion: "13.0.4", highestPatch: "12.0.3", isOutdated: true,
+            projects: ["Shop.Api", "Shop.Worker"], directProjects: ["Shop.Api", "Shop.Worker"],
+        });
+        base.installed.push(pkg({ id: "Newtonsoft.Json", version: "12.0.1", projects: ["Shop.Worker"], directProjects: ["Shop.Worker"] }));
+        const projects = buildDashboardState(base).projects;
+        const worker = projects.find((p) => p.name === "Shop.Worker")!;
+        assert.deepStrictEqual({ vulnerable: worker.vulnerable, outdated: worker.outdated, deprecated: worker.deprecated },
+            { vulnerable: 0, outdated: 1, deprecated: 0 });
+        const api = projects.find((p) => p.name === "Shop.Api")!;
+        assert.deepStrictEqual({ vulnerable: api.vulnerable, outdated: api.outdated, deprecated: api.deprecated },
+            { vulnerable: 2, outdated: 1, deprecated: 1 });
+    });
+
+    test("a deprecated package is counted only where the deprecated report saw it", () => {
+        const base = input();
+        base.outdated.push(pkg({
+            id: "Microsoft.Azure.ServiceBus", version: "5.2.0", latestVersion: "5.2.1", isOutdated: true,
+            projects: ["Shop.Tests"], directProjects: ["Shop.Tests"],
+        }));
+        const tests = buildDashboardState(base).projects.find((p) => p.name === "Shop.Tests")!;
+        assert.strictEqual(tests.deprecated, 0);
+        assert.strictEqual(tests.outdated, 2);
+    });
+
+    test("vulnerable packages without an advisory link still count", () => {
+        const base = input({ vulnerable: [pkg({
+            id: "Legacy.Crypto", version: "1.0.0", isVulnerable: true, severity: "High", projects: ["Shop.Api"], directProjects: ["Shop.Api"],
+        })], outdated: [], deprecated: [] });
+        const state = buildDashboardState(base);
+        const legacy = state.packages.find((p) => p.id === "Legacy.Crypto")!;
+        assert.strictEqual(legacy.vulnerable, true);
+        assert.deepStrictEqual(legacy.advisories, []);
+        assert.strictEqual(legacy.severity, "high");
+        assert.match(legacy.note!.text, /no advisory link/);
+        assert.strictEqual(state.score.vulnerable, 8);
+        assert.strictEqual(state.score.score, 92);
+        assert.strictEqual(state.projects.find((p) => p.name === "Shop.Api")!.vulnerable, 1);
+    });
+
+    test("preview lists transitive projects of a direct package and the pin they get", () => {
+        const base = input();
+        base.vulnerable[0] = pkg({
+            ...base.vulnerable[0],
+            projects: ["Shop.Api", "Shop.Worker"], directProjects: ["Shop.Api"], transitiveProjects: ["Shop.Worker"],
+            transitiveOrigins: [{ project: "Shop.Worker", broughtBy: "Shop.Api", broughtByKind: "project", absentFromGraph: false }],
+        });
+        const state = buildDashboardState(base);
+        const action = findAction(state, "update:Newtonsoft.Json")!;
+        assert.deepStrictEqual(action.projects, ["Shop.Api", "Shop.Worker"]);
+        assert.ok(action.preview.lines.includes("Direct reference in: Shop.Api."));
+        assert.ok(action.preview.lines.some((line) => /^Transitive in: Shop\.Worker\. A direct PackageReference will be added/.test(line)));
+    });
+
+    test("the patch estimate keeps advisories the patch leaves open, at their own severity", () => {
+        const advisoryHigh = `${GH}GHSA-aaaa-bbbb-cccc`;
+        const advisoryLow = `${GH}GHSA-dddd-eeee-ffff`;
+        RANGES["contoso.lib"] = { "GHSA-aaaa-bbbb-cccc": ["(, 2.0.1)"], "GHSA-dddd-eeee-ffff": ["(, 3.0.0)"] };
+        try {
+            const base = input({
+                vulnerable: [pkg({
+                    id: "Contoso.Lib", version: "2.0.0", highestPatch: "2.0.5", isVulnerable: true, severity: "High",
+                    advisoryUrls: [advisoryHigh, advisoryLow],
+                    advisorySeverities: { [advisoryHigh]: "High", [advisoryLow]: "Low" },
+                    projects: ["Shop.Api"], directProjects: ["Shop.Api"],
+                })],
+                outdated: [],
+                deprecated: [],
+            });
+            const state = buildDashboardState(base);
+            assert.strictEqual(state.score.score, 92);
+            // 2.0.5 closes the high advisory; the low one stays: 100 - 1.
+            assert.deepStrictEqual(findAction(state, "patch")!.score, { from: 92, to: 99 });
+        } finally {
+            delete RANGES["contoso.lib"];
+        }
+    });
+
+    test("the patch estimate keeps transitive occurrences the bulk patch does not touch", () => {
+        // System.Text.Json is direct in Shop.Core and transitive in Shop.Api.
+        // The highest patch only edits Shop.Core, so Shop.Api stays vulnerable.
+        const state = buildDashboardState(input());
+        const patch = findAction(state, "patch")!;
+        // Nothing leaves the score: 12.0.3 does not close the Newtonsoft.Json advisory, and
+        // both patched packages are still behind the latest version.
+        assert.strictEqual(patch.score, undefined);
+        const base = input();
+        base.vulnerable[1] = pkg({ ...base.vulnerable[1], projects: ["Shop.Core"], transitiveProjects: [] });
+        const direct = findAction(buildDashboardState(base), "patch")!;
+        // Now the patch clears System.Text.Json: 2 high (16), 3 outdated (6), 1 deprecated (4) = 74.
+        assert.deepStrictEqual(direct.score, { from: 66, to: 74 });
     });
 
     test("the state survives JSON, as postMessage needs", () => {
