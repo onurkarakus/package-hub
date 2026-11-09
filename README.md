@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/version-short/onurkarakus.package-hub.svg" alt="Marketplace version"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/installs-short/onurkarakus.package-hub.svg" alt="Marketplace installs"></a>
-  <a href="https://github.com/onurkarakus/package-hub/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/version-short/onurkarakus.package-hub.png" alt="Marketplace version"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/installs-short/onurkarakus.package-hub.png" alt="Marketplace installs"></a>
+  <a href="https://github.com/onurkarakus/package-hub/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.png" alt="MIT license"></a>
 </p>
 
 ![The PackageHub Health Dashboard for a four-project solution: a health score of 14 out of 100, cards for vulnerable, outdated and deprecated packages and feeds, the package table with Azure.Identity expanded to show its advisories and the path that brings it in, recommended actions on the right and a project heatmap at the bottom](docs/images/05-dashboard-dark.png)
