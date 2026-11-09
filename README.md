@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="media/packagehub-logo.png" width="96" alt="PackageHub logo">
+  <img src="https://raw.githubusercontent.com/onurkarakus/package-hub/master/media/packagehub-logo.png" width="96" alt="PackageHub logo">
 </p>
 
 <h1 align="center">PackageHub</h1>
@@ -12,24 +12,49 @@
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/version-short/onurkarakus.package-hub.svg" alt="Marketplace version"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/installs-short/onurkarakus.package-hub.svg" alt="Marketplace installs"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+  <a href="https://github.com/onurkarakus/package-hub/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-![Directory.Packages.props after a scan. Vulnerable packages show a warning and the newer version, outdated packages a cross and the latest version, deprecated packages their own mark, and current packages a check. The Package Health view lists the vulnerable packages on the left.](docs/images/01-line-marks-dark.png)
+![The PackageHub Health Dashboard for a four-project solution: a health score of 14 out of 100, cards for vulnerable, outdated and deprecated packages and feeds, the package table with Azure.Identity expanded to show its advisories and the path that brings it in, recommended actions on the right and a project heatmap at the bottom](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/05-dashboard-dark.png)
 
-## Why PackageHub
+## Highlights
 
-- **The answer is on the line.** After a scan, every package line in a `.csproj`, `.fsproj` or `Directory.Packages.props` shows one mark: vulnerable, outdated, deprecated or current. No more hunting through yellow warnings.
-- **The safe update comes first.** The first suggestion is the highest patch in the same major version. A newer major is a separate choice you make on purpose.
-- **Nothing changes behind your back.** Project files are written only after you choose **Yes, Update** or **Yes, Remove**.
-- **Built for real solutions.** It reads `.sln` files, C# and F# projects, Central Package Management and transitive packages, and tells you which project brought a package in.
-- **Local-first and private.** No account, no sign-in, no usage data. By default PackageHub itself makes no network request; `dotnet` talks to your feeds as usual.
+- **Health Dashboard** with a 0–100 score, a searchable package table, recommended updates you can preview and apply, and a heatmap per project.
+- **Line marks** in `.csproj`, `.fsproj` and `Directory.Packages.props`: vulnerable, outdated, deprecated or current, at a glance.
+- **Safe updates first**: the highest patch in the same major is always the first suggestion. Nothing is written until you confirm a summary of the change.
+- **Why is this here?** shows which project and package bring in a transitive dependency.
+- **Central Package Management**, `VersionOverride`, `GlobalPackageReference`, solutions, C# and F#.
+- **Local-first**: no account, no telemetry, and no network request of its own by default.
+
+## Quick start
+
+1. Install PackageHub and make sure `dotnet` is on your PATH.
+2. Open a folder that contains a `.csproj`, `.fsproj`, `.sln` or `Directory.Packages.props` file. PackageHub starts on its own.
+3. Wait for the startup scan, or run `PackageHub: Scan Workspace`. Saving a `.csproj`, `.fsproj` or `.props` file scans again.
+4. Open a project file and read the marks. Hover a yellow line for the details.
+5. Press **Ctrl+.** on a vulnerable package and pick **Update to highest patch**. Confirm with **Yes, Update**.
 
 ## Features
+
+### Health Dashboard
+
+`PackageHub: Show Health Dashboard` gives the whole workspace in one place.
+
+- **Health score** from 0 to 100. Vulnerable packages lower it by severity (critical 15, high 8, moderate 4, low 1, at most 60). Each outdated direct package takes 2 (at most 20), each deprecated one 4 (at most 12), and each failing feed 4 (at most 8). Hover the score to see the breakdown.
+- **Packages that need attention**: search, filter by vulnerable, outdated, deprecated, direct or transitive, and sort by any column. Expand a row for its advisories, the projects that use it, the path that brings a transitive package in, and the version that closes the advisories.
+- **Recommended actions**: the highest patch for every direct package, single updates where a patch is not enough, pins for transitive packages, and replacements for deprecated ones. Each shows the advisories it closes, the projects and files it edits, and the estimated score after it when the score goes up. **Preview** shows the update summary; **Apply** runs the same update as the rest of PackageHub, with the same confirmation.
+- **Projects** shows a heatmap of vulnerable, outdated and deprecated packages per project. Click a project to filter the table.
+- **Feeds** shows the same source status as the Feeds group.
+
+Everything on the dashboard comes from the last scan and the local advisory data. Opening it runs no `dotnet` command and makes no network request. It follows your color theme, including high contrast.
+
+![The Health Dashboard in the Light Modern theme](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/05-dashboard-light.png)
 
 ### Line marks on every package
 
 The mark appears at the end of the package line after a scan.
+
+![Directory.Packages.props after a scan. Vulnerable packages show a warning and the newer version, outdated packages a cross and the latest version, deprecated packages their own mark, and current packages a check. The Package Health view lists the vulnerable packages on the left.](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/01-line-marks-dark.png)
 
 | Mark | Meaning |
 | --- | --- |
@@ -40,17 +65,15 @@ The mark appears at the end of the package line after a scan.
 
 A check is drawn only when the installed, vulnerable, outdated and deprecated lists all include that project, so a project the scan could not read stays unmarked. The NU1901–NU1904 underline and the text above the line stay too: the mark does not replace them. The mark is not clickable, and moving the cursor over it does not run `dotnet`.
 
-![The same file in the Light Modern theme](docs/images/01-line-marks-light.png)
-
 ### A hover that explains the warning
 
-![Hover on Newtonsoft.Json 12.0.1: the NU1903 warning, the severity, where the version is set, the first fixed version, and buttons for Highest patch, Latest, First fixed, Open Advisory, Why, Ignore and Remove](docs/images/02-hover-dark.png)
+![Hover on Newtonsoft.Json 12.0.1: the NU1903 warning, the severity, where the version is set, the first fixed version, and buttons for Highest patch, Latest, First fixed, Open Advisory, Why, Ignore and Remove](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/02-hover-dark.png)
 
 Hover a package line to see the version, the severity, whether the advisory is still open, and the first version that closes it. The buttons run the same actions as the lightbulb. Opening the hover does not run `dotnet`.
 
 ### Safe updates from the lightbulb
 
-![Quick Fix on System.Text.Json 8.0.0: Update to highest patch 8.0.6 first, then latest 10.0.14, first fixed 8.0.4 and Open Advisory](docs/images/03-quick-fix-dark.png)
+![Quick Fix on System.Text.Json 8.0.0: Update to highest patch 8.0.6 first, then latest 10.0.14, first fixed 8.0.4 and Open Advisory](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/03-quick-fix-dark.png)
 
 Put the cursor on a vulnerable package and press **Ctrl+.** (**Cmd+.** on macOS).
 
@@ -63,7 +86,7 @@ Each choice says whether the advisory closes or stays open. Before anything is w
 
 ### Package Health view
 
-![The Package Health view with Vulnerable, Outdated, Deprecated, Conflicts, Projects and Actions groups, next to Shop.Api.csproj with its line marks](docs/images/04-package-health-dark.png)
+![The Package Health view with Vulnerable, Outdated, Deprecated, Conflicts, Projects and Actions groups, next to Shop.Api.csproj with its line marks](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/04-package-health-dark.png)
 
 The **PackageHub** icon on the Activity Bar opens your packages, grouped into **Vulnerable**, **Outdated**, **Deprecated**, **Conflicts**, **Projects** and **Feeds**. Each package shows its version, severity and the projects that use it, including `transitive via …`. Click a package to open its line. Right-click for Update, Show Package Info, Open on NuGet, Ignore, Dependencies, Why is this here? and Remove.
 
@@ -71,31 +94,15 @@ The **PackageHub** icon on the Activity Bar opens your packages, grouped into **
 
 The status bar counts vulnerable, outdated and deprecated packages, and says when a project could not be checked. In a folder without .NET projects it shows a plain **PackageHub**. Click it to open the dashboard.
 
-### Health Dashboard
-
-![The Health Dashboard for contoso-shop: health score 14 of 100, the KPI cards, the packages that need attention with the Azure.Identity row expanded with its advisories and path, the recommended actions, and the project heatmap](docs/images/05-dashboard-dark.png)
-
-`PackageHub: Show Health Dashboard` gives the whole workspace in one place.
-
-- **Health score** from 0 to 100. Vulnerable packages lower it by severity (critical 15, high 8, moderate 4, low 1, at most 60). Each outdated direct package takes 2 (at most 20), each deprecated one 4 (at most 12), and each failing feed 4 (at most 8). Hover the score to see the breakdown.
-- **Packages that need attention**: search, filter by vulnerable, outdated, deprecated, direct or transitive, and sort by any column. Expand a row for its advisories, the projects that use it, the path that brings a transitive package in, and the version that closes the advisories.
-- **Recommended actions**: the highest patch for every direct package, single updates where a patch is not enough, pins for transitive packages, and replacements for deprecated ones. Each shows the advisories it closes, the projects and files it edits, and the estimated score after it when the score goes up. **Preview** shows the update summary; **Apply** runs the same update as the rest of PackageHub, with the same confirmation.
-- **Projects** shows a heatmap of vulnerable, outdated and deprecated packages per project. Click a project to filter the table.
-- **Feeds** shows the same source status as the Feeds group.
-
-Everything on the dashboard comes from the last scan and the local advisory data. Opening it runs no `dotnet` command and makes no network request. It follows your color theme, including high contrast.
-
-![The Health Dashboard in the Light Modern theme](docs/images/05-dashboard-light.png)
-
 ### Why is this here?
 
-![The path window for Azure.Identity 1.7.0: Shop.Api → Shop.Data → Microsoft.Data.SqlClient 5.1.0 → Azure.Identity, what it depends on, and what depends on it](docs/images/06-why-dark.png)
+![The path window for Azure.Identity 1.7.0: Shop.Api → Shop.Data → Microsoft.Data.SqlClient 5.1.0 → Azure.Identity, what it depends on, and what depends on it](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/06-why-dark.png)
 
 Not sure where a transitive package comes from? Choose **Why is this here?** from the hover, the Package Health view or the right-click menu on a package line. A window shows the path from each project to the package, what the package depends on, and what depends on it. The `dotnet nuget why` output is written to the Output panel. This needs the .NET SDK 8.0.400 or newer.
 
 ### Get started in a minute
 
-![The Get Started walkthrough with the "Read the line marks" step open](docs/images/07-walkthrough-dark.png)
+![The Get Started walkthrough with the "Read the line marks" step open](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/07-walkthrough-dark.png)
 
 Run **PackageHub: Get Started** for a short walkthrough: open a project, run the first scan, read the marks, apply a safe update, open the dashboard, ask why a package is there, and tune the settings.
 
@@ -108,21 +115,13 @@ Run **PackageHub: Get Started** for a short walkthrough: open a project, run the
 
 `PackageHub: Copy Health Report` and `PackageHub: Copy Vulnerability Report` copy a Markdown summary to the clipboard, ready for a pull request or a ticket.
 
-## Quick start
-
-1. Install PackageHub and make sure `dotnet` is on your PATH.
-2. Open a folder that contains a `.csproj`, `.fsproj`, `.sln` or `Directory.Packages.props` file. PackageHub starts on its own.
-3. Wait for the startup scan, or run `PackageHub: Scan Workspace`. Saving a `.csproj`, `.fsproj` or `.props` file scans again.
-4. Open a project file and read the marks. Hover a yellow line for the details.
-5. Press **Ctrl+.** on a vulnerable package and pick **Update to highest patch**. Confirm with **Yes, Update**.
-
 ## Languages and files
 
 <p>
-  <img src="media/readme/csharp.png" alt="C#" width="48" height="48" />
+  <img src="https://raw.githubusercontent.com/onurkarakus/package-hub/master/media/readme/csharp.png" alt="C#" width="48" height="48" />
   &nbsp;&nbsp;<strong>C#</strong>
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="media/readme/fsharp.png" alt="F#" width="48" height="48" />
+  <img src="https://raw.githubusercontent.com/onurkarakus/package-hub/master/media/readme/fsharp.png" alt="F#" width="48" height="48" />
   &nbsp;&nbsp;<strong>F#</strong>
 </p>
 
@@ -138,7 +137,7 @@ When a solution cannot be loaded in one pass, PackageHub scans its projects one 
 
 PackageHub reads the versions in `Directory.Packages.props`. The marks, the hover and the lightbulb work on the `PackageVersion` lines there, and on the `PackageReference` lines in your projects that have no version of their own.
 
-When you update a package, the new version is written to `Directory.Packages.props`. A `VersionOverride` is updated in the project that sets it, and a `GlobalPackageReference` in the file that declares it. You do not edit the project files by hand. The dashboard shows **CPM Enabled** when the workspace uses it.
+When you update a package, the new version is written to `Directory.Packages.props`. A `VersionOverride` is updated in the project that sets it, and a `GlobalPackageReference` in the file that declares it. You do not edit the project files by hand. The dashboard header shows **Central package management** and the file it reads when the workspace uses it.
 
 ## Commands
 
@@ -148,6 +147,8 @@ When you update a package, the new version is written to `Directory.Packages.pro
 | `PackageHub: Scan Workspace` | Scans your packages again |
 | `PackageHub: Show Health Dashboard` | Opens the summary and the bulk updates |
 | `PackageHub: Why is this here?` | Shows how the package entered the project |
+| `PackageHub: Dependencies` | Opens the dependency graph for the package on the current line |
+| `PackageHub: Explain Selected Package` | Shows what the last scan found for the package on the current line |
 | `PackageHub: Update All to Highest Patch` | Applies the same-major patch across packages |
 | `PackageHub: Update All to Highest Minor` | Applies the same-major minor update across packages |
 | `PackageHub: Update to Highest Patch` / `Update to Latest` | Updates the package on the current line |
@@ -179,9 +180,9 @@ When you update a package, the new version is written to `Directory.Packages.pro
 - `dotnet` on your PATH
 - .NET SDK 8.0.400 or newer for **Why is this here?**
 
-## Privacy
+## Local-first
 
-PackageHub is local-first. With the default settings the extension itself makes no network request.
+PackageHub works from what is already on your machine. With the default settings the extension itself makes no network request: no telemetry, no account, no calls to nuget.org of its own.
 
 - **No usage data.** PackageHub does not collect or send telemetry, and there is no account or sign-in. It runs `dotnet` with `DOTNET_CLI_TELEMETRY_OPTOUT=1`.
 - **Your code stays on your machine.** Package data comes from the `dotnet` CLI and from local files: your project files, `project.assets.json`, and the NuGet caches `dotnet` already wrote. `dotnet` itself reads the package sources in your NuGet.config to find vulnerabilities and newer versions, as it does on the command line.
@@ -189,9 +190,23 @@ PackageHub is local-first. With the default settings the extension itself makes 
 - **Credentials stay where they are.** Feed health uses the source list from `dotnet nuget list source` and the messages `dotnet` printed. PackageHub does not read or store credentials, and it does not contact a feed to test it.
 - **Links open only when you click them.** NuGet and advisory pages open in your browser.
 
-## FAQ
+The only code path that can reach the network is the opt-in online lookup above. The dashboard, the hover, the lightbulb and the update summary are all built from the last scan and local files.
+
+## FAQ and troubleshooting
 
 **Nothing shows on my package lines.** Run `PackageHub: Scan Workspace` and check the **PackageHub** channel in the Output panel. A project the scan could not read stays unmarked on purpose.
+
+**PackageHub does not start.** It starts when the folder has a `.csproj`, `.fsproj`, `.sln` or `Directory.Packages.props` file, and only in a trusted workspace, because `dotnet` and MSBuild can run code from the project. Trust the folder and run `PackageHub: Scan Workspace`.
+
+**`dotnet` was not found.** Make sure `dotnet --version` works in the terminal VS Code opens. On macOS, start VS Code from a terminal once if it does not see your PATH.
+
+**The scan says the audit source returned no vulnerability data.** Your feeds may not provide vulnerability data, or the last restore ran with NuGetAudit off. Restore once with network access, or turn on `packageHub.onlineLookups`.
+
+**A feed fails with NU1301.** Open **Feeds** in the Package Health view or the dashboard. It shows the failing source and a hint, for example a missing credential provider.
+
+**The dashboard score did not change after an update.** The dashboard shows the last scan. PackageHub scans again after an update it applied; after a change you made by hand, run `PackageHub: Scan Workspace`.
+
+**I still have `packageHub.dashboardViewMode` in my settings.** It was removed in 0.2.0 and is ignored. You can delete the line.
 
 **Why is the first suggestion not the latest version?** A new major version can break your build. The highest patch in the same major is the safe default. **Update to latest** is right below it when you want it.
 
@@ -203,8 +218,12 @@ PackageHub is local-first. With the default settings the extension itself makes 
 
 ## Feedback
 
-Questions and ideas are welcome in the Q&A section of the [Marketplace page](https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub&ssr=false#qna). Release notes are in [CHANGELOG.md](CHANGELOG.md).
+Questions and ideas are welcome in the Q&A section of the [Marketplace page](https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub&ssr=false#qna). Release notes are in the [changelog](https://github.com/onurkarakus/package-hub/blob/master/CHANGELOG.md). Bugs and feature requests go to [GitHub issues](https://github.com/onurkarakus/package-hub/issues).
+
+## Contributing
+
+Build and test instructions are in [CONTRIBUTING.md](https://github.com/onurkarakus/package-hub/blob/master/CONTRIBUTING.md).
 
 ## License
 
-MIT
+[MIT](https://github.com/onurkarakus/package-hub/blob/master/LICENSE)

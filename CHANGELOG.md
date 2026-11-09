@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-09
+
+### Upgrading
+
+- `packageHub.dashboardViewMode` is gone. If it is still in your `settings.json`, nothing breaks: VS Code greys it out as an unknown setting and PackageHub never reads it. You can delete the line.
+- `packageHub.updateVulnerable` still takes `packageId`, `version` and `projectName`, so existing keybindings and tasks keep working. The new `projects` argument is optional.
+- The saved last scan keeps its format. A scan saved by 0.0.4 or 0.1.0 loads as before; run a new scan to fill in the per-advisory severities.
+- 0.1.0 was not published to the Marketplace. Coming from 0.0.4, read the 0.1.0 notes below too. PackageHub now needs VS Code 1.74 or newer (0.0.4 needed 1.125), and it starts when the folder has a project, solution or `Directory.Packages.props` file, not when a loose C# or F# file opens.
+
 ### Changed
 
 - New Health Dashboard: a health score with its breakdown, KPI cards, a package table you can search, filter, sort and expand (advisories, projects, the path that brings a transitive package in), recommended actions with Preview and Apply, a project heatmap and the feed status. It follows the color theme and is built from the last scan and local advisory data only.

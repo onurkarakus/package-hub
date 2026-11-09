@@ -2,8 +2,8 @@
   "name": "package-hub",
   "publisher": "onurkarakus",
   "displayName": "PackageHub",
-  "description": "Manage your NuGet packages in the editor. See which ones need attention, then update them in a few clicks.",
-  "version": "0.1.0",
+  "description": "See vulnerable, outdated and deprecated NuGet packages in your C# and F# projects, and apply safe updates in a few clicks. Local-first, no telemetry.",
+  "version": "0.2.0",
   "license": "MIT",
   "author": {
     "name": "Onur Karakuş"
@@ -33,7 +33,13 @@
     "vulnerability",
     "dependencies",
     "security",
-    "audit"
+    "audit",
+    "package manager",
+    "nuget package manager",
+    "central package management",
+    "directory.packages.props",
+    ".net",
+    "packages"
   ],
   "icon": "media/packagehub-logo.png",
   "galleryBanner": {
