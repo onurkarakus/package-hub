@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/onurkarakus/package-hub/master/media/packagehub-logo.png" width="96" alt="PackageHub logo">
+  <img src="media/packagehub-logo.png" width="96" alt="PackageHub logo">
 </p>
 
 <h1 align="center">PackageHub</h1>
@@ -15,7 +15,7 @@
   <a href="https://github.com/onurkarakus/package-hub/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-![The PackageHub Health Dashboard for a four-project solution: a health score of 14 out of 100, cards for vulnerable, outdated and deprecated packages and feeds, the package table with Azure.Identity expanded to show its advisories and the path that brings it in, recommended actions on the right and a project heatmap at the bottom](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/05-dashboard-dark.png)
+![The PackageHub Health Dashboard for a four-project solution: a health score of 14 out of 100, cards for vulnerable, outdated and deprecated packages and feeds, the package table with Azure.Identity expanded to show its advisories and the path that brings it in, recommended actions on the right and a project heatmap at the bottom](docs/images/05-dashboard-dark.png)
 
 ## Highlights
 
@@ -48,13 +48,13 @@
 
 Everything on the dashboard comes from the last scan and the local advisory data. Opening it runs no `dotnet` command and makes no network request. It follows your color theme, including high contrast.
 
-![The Health Dashboard in the Light Modern theme](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/05-dashboard-light.png)
+![The Health Dashboard in the Light Modern theme](docs/images/05-dashboard-light.png)
 
 ### Line marks on every package
 
 The mark appears at the end of the package line after a scan.
 
-![Directory.Packages.props after a scan. Vulnerable packages show a warning and the newer version, outdated packages a cross and the latest version, deprecated packages their own mark, and current packages a check. The Package Health view lists the vulnerable packages on the left.](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/01-line-marks-dark.png)
+![Directory.Packages.props after a scan. Vulnerable packages show a warning and the newer version, outdated packages a cross and the latest version, deprecated packages their own mark, and current packages a check. The Package Health view lists the vulnerable packages on the left.](docs/images/01-line-marks-dark.png)
 
 | Mark | Meaning |
 | --- | --- |
@@ -67,13 +67,13 @@ A check is drawn only when the installed, vulnerable, outdated and deprecated li
 
 ### A hover that explains the warning
 
-![Hover on Newtonsoft.Json 12.0.1: the NU1903 warning, the severity, where the version is set, the first fixed version, and buttons for Highest patch, Latest, First fixed, Open Advisory, Why, Ignore and Remove](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/02-hover-dark.png)
+![Hover on Newtonsoft.Json 12.0.1: the NU1903 warning, the severity, where the version is set, the first fixed version, and buttons for Highest patch, Latest, First fixed, Open Advisory, Why, Ignore and Remove](docs/images/02-hover-dark.png)
 
 Hover a package line to see the version, the severity, whether the advisory is still open, and the first version that closes it. The buttons run the same actions as the lightbulb. Opening the hover does not run `dotnet`.
 
 ### Safe updates from the lightbulb
 
-![Quick Fix on System.Text.Json 8.0.0: Update to highest patch 8.0.6 first, then latest 10.0.14, first fixed 8.0.4 and Open Advisory](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/03-quick-fix-dark.png)
+![Quick Fix on System.Text.Json 8.0.0: Update to highest patch 8.0.6 first, then latest 10.0.14, first fixed 8.0.4 and Open Advisory](docs/images/03-quick-fix-dark.png)
 
 Put the cursor on a vulnerable package and press **Ctrl+.** (**Cmd+.** on macOS).
 
@@ -86,7 +86,7 @@ Each choice says whether the advisory closes or stays open. Before anything is w
 
 ### Package Health view
 
-![The Package Health view with Vulnerable, Outdated, Deprecated, Conflicts, Projects and Actions groups, next to Shop.Api.csproj with its line marks](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/04-package-health-dark.png)
+![The Package Health view with Vulnerable, Outdated, Deprecated, Conflicts, Projects and Actions groups, next to Shop.Api.csproj with its line marks](docs/images/04-package-health-dark.png)
 
 The **PackageHub** icon on the Activity Bar opens your packages, grouped into **Vulnerable**, **Outdated**, **Deprecated**, **Conflicts**, **Projects** and **Feeds**. Each package shows its version, severity and the projects that use it, including `transitive via …`. Click a package to open its line. Right-click for Update, Show Package Info, Open on NuGet, Ignore, Dependencies, Why is this here? and Remove.
 
@@ -96,13 +96,13 @@ The status bar counts vulnerable, outdated and deprecated packages, and says whe
 
 ### Why is this here?
 
-![The path window for Azure.Identity 1.7.0: Shop.Api → Shop.Data → Microsoft.Data.SqlClient 5.1.0 → Azure.Identity, what it depends on, and what depends on it](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/06-why-dark.png)
+![The path window for Azure.Identity 1.7.0: Shop.Api → Shop.Data → Microsoft.Data.SqlClient 5.1.0 → Azure.Identity, what it depends on, and what depends on it](docs/images/06-why-dark.png)
 
 Not sure where a transitive package comes from? Choose **Why is this here?** from the hover, the Package Health view or the right-click menu on a package line. A window shows the path from each project to the package, what the package depends on, and what depends on it. The `dotnet nuget why` output is written to the Output panel. This needs the .NET SDK 8.0.400 or newer.
 
 ### Get started in a minute
 
-![The Get Started walkthrough with the "Read the line marks" step open](https://raw.githubusercontent.com/onurkarakus/package-hub/master/docs/images/07-walkthrough-dark.png)
+![The Get Started walkthrough with the "Read the line marks" step open](docs/images/07-walkthrough-dark.png)
 
 Run **PackageHub: Get Started** for a short walkthrough: open a project, run the first scan, read the marks, apply a safe update, open the dashboard, ask why a package is there, and tune the settings.
 
@@ -118,10 +118,10 @@ Run **PackageHub: Get Started** for a short walkthrough: open a project, run the
 ## Languages and files
 
 <p>
-  <img src="https://raw.githubusercontent.com/onurkarakus/package-hub/master/media/readme/csharp.png" alt="C#" width="48" height="48" />
+  <img src="media/readme/csharp.png" alt="C#" width="48" height="48" />
   &nbsp;&nbsp;<strong>C#</strong>
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="https://raw.githubusercontent.com/onurkarakus/package-hub/master/media/readme/fsharp.png" alt="F#" width="48" height="48" />
+  <img src="media/readme/fsharp.png" alt="F#" width="48" height="48" />
   &nbsp;&nbsp;<strong>F#</strong>
 </p>
 
