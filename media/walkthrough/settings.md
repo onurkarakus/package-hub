@@ -12,3 +12,6 @@ Other settings:
 
 - `packageHub.scanOnStartup` scans when the folder opens (`true`).
 - `packageHub.ignoredPackages` hides package ids from the lists. **Ignore** on a package adds it for you.
+- `packageHub.badge` sets what the view badge counts: `vulnerable` (default), `vulnerableAndOutdated`, `all` or `off`.
+- `packageHub.rollbackOnFailure` puts every file back when one step of a bulk update fails (`true`).
+- `packageHub.onlineLookups` lets PackageHub read missing advisory ranges, publish dates and package metadata from nuget.org (`false`).

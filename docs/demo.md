@@ -17,3 +17,11 @@ Kayıtlı GIF yoktur. Aşağıdaki adımlar Extension Host penceresindedir.
 10. Paket adına tıkla. Yol penceresi Consumer → AuditQuickFix → Newtonsoft.Json yolunu yazar.
 
 Güncellemeyi onaylama.
+
+## 0.3 adımları
+
+11. Package Health görünümünde **+** düğmesine bas. `Newtonsoft` yaz. Yerel önbellekteki sürümler hemen listelenir.
+12. Paketi seç, AuditQuickFix projesini işaretle, bir sürüm seç. Onay penceresinde `What's in …` satırları lisansı, sürüm notlarını ve bağımlılıkları yazar. **Yes, Add** deme.
+13. Dashboard’da **Add package** sekmesini aç. `Serilog` yaz, **Search package sources** düğmesine bas. Sonuçlar `dotnet package search` ile gelir.
+14. Satırdaki işaretin üstüne gel. İpucunda **Update to …**, **Open Advisory** ve **Why is this here?** bağlantıları vardır.
+15. Türkçe dil paketini kur ve VS Code dilini Türkçe yap (`Configure Display Language`). Komutlar, ayarlar ve dashboard Türkçe görünür.

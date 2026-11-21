@@ -6,31 +6,48 @@
 
 <p align="center">
   <b>Your NuGet packages, checked on every line.</b><br>
-  See which packages in your C# and F# projects are vulnerable, outdated or deprecated, and apply the safe update in a few clicks.
+  See which packages in your C#, F# and Visual Basic projects are vulnerable, outdated or deprecated, add new ones, and apply the safe update in a few clicks.
 </p>
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/version-short/onurkarakus.package-hub.png" alt="Marketplace version"></a>
   <a href="https://marketplace.visualstudio.com/items?itemName=onurkarakus.package-hub"><img src="https://vsmarketplacebadges.dev/installs-short/onurkarakus.package-hub.png" alt="Marketplace installs"></a>
+  <a href="https://open-vsx.org/extension/onurkarakus/package-hub"><img src="https://img.shields.io/open-vsx/v/onurkarakus/package-hub.png?label=Open%20VSX" alt="Open VSX version"></a>
   <a href="https://github.com/onurkarakus/package-hub/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.png" alt="MIT license"></a>
 </p>
 
 ![The PackageHub Health Dashboard for a four-project solution: a health score of 14 out of 100, cards for vulnerable, outdated and deprecated packages and feeds, the package table with Azure.Identity expanded to show its advisories and the path that brings it in, recommended actions on the right and a project heatmap at the bottom](docs/images/05-dashboard-dark.png)
 
+## New in 0.3
+
+- **Add a package** from the command palette, the Package Health view or the new **Add package** tab in the dashboard. PackageHub searches the local NuGet cache as you type, with no network request. When you ask for it, `dotnet package search` looks in the package sources from your NuGet.config. Pick the projects and the version, read the summary, and confirm. `dotnet add package` writes the reference, so Central Package Management works as usual.
+- **Align versions** when projects drift apart on one package. One click brings every direct reference to the highest version already in use inside the same major version. Versions are never downgraded and never cross a major version, and a project that sets a different version per target framework keeps it.
+- **What's in this update** in every confirmation: the license, the release notes and the dependency changes, read from the `.nuspec` in the local NuGet cache. With `packageHub.onlineLookups` on, a missing `.nuspec` is read from nuget.org.
+- **`.slnx` solutions** are scanned, restored and watched like `.sln` files.
+- **Visual Basic projects** (`.vbproj`) get the same marks, hover, lightbulb and updates.
+- **Remove unused central versions**: find the `PackageVersion` entries in `Directory.Packages.props` that no project uses, preview them and remove the ones you pick.
+- **Ranges, floating versions and properties**: an update keeps a version range and stays inside it, a floating version such as `1.*` is restored instead of rewritten, and a `$(Property)` version is updated where the property is defined.
+- **Rollback on failure**: when one step of a bulk update fails, every file it touched is put back as it was.
+- **Clickable line marks**: hover a mark for **Update**, **Open Advisory** and **Why is this here?** links.
+- **Badge options**: the view badge can count vulnerable, outdated and deprecated packages. See `packageHub.badge`.
+- **Turkish**: commands, settings, the dashboard and the messages follow VS Code's display language. English stays the default.
+
 ## Highlights
 
 - **Health Dashboard** with a 0–100 score, a searchable package table, recommended updates you can preview and apply, and a heatmap per project.
-- **Line marks** in `.csproj`, `.fsproj` and `Directory.Packages.props`: vulnerable, outdated, deprecated or current, at a glance.
+- **Line marks** in `.csproj`, `.fsproj`, `.vbproj` and `Directory.Packages.props`: vulnerable, outdated, deprecated or current, at a glance. Hover a mark for one-click actions.
 - **Safe updates first**: the highest patch in the same major is always the first suggestion. Nothing is written until you confirm a summary of the change.
+- **Add packages** from the local NuGet cache or your package sources, with a project and version picker and the same confirmation.
+- **Align drifted versions** inside one major version with one click.
 - **Why is this here?** shows which project and package bring in a transitive dependency.
-- **Central Package Management**, `VersionOverride`, `GlobalPackageReference`, solutions, C# and F#.
+- **Central Package Management**, `VersionOverride`, `GlobalPackageReference`, `.sln` and `.slnx` solutions, C#, F# and Visual Basic.
 - **Local-first**: no account, no telemetry, and no network request of its own by default.
 
 ## Quick start
 
 1. Install PackageHub and make sure `dotnet` is on your PATH.
-2. Open a folder that contains a `.csproj`, `.fsproj`, `.sln` or `Directory.Packages.props` file. PackageHub starts on its own.
-3. Wait for the startup scan, or run `PackageHub: Scan Workspace`. Saving a `.csproj`, `.fsproj` or `.props` file scans again.
+2. Open a folder that contains a `.csproj`, `.fsproj`, `.vbproj`, `.sln`, `.slnx` or `Directory.Packages.props` file. PackageHub starts on its own.
+3. Wait for the startup scan, or run `PackageHub: Scan Workspace`. Saving a project or `.props` file scans again.
 4. Open a project file and read the marks. Hover a yellow line for the details.
 5. Press **Ctrl+.** on a vulnerable package and pick **Update to highest patch**. Confirm with **Yes, Update**.
 
@@ -106,6 +123,35 @@ Not sure where a transitive package comes from? Choose **Why is this here?** fro
 
 Run **PackageHub: Get Started** for a short walkthrough: open a project, run the first scan, read the marks, apply a safe update, open the dashboard, ask why a package is there, and tune the settings.
 
+### Add a package
+
+Run `PackageHub: Add Package`, click **+** in the Package Health view, or open the **Add package** tab in the dashboard.
+
+1. Type part of a package name. Packages already in your local NuGet cache show up right away, offline.
+2. Not there? Pick **Search package sources**. `dotnet package search` runs with the sources and credentials in your NuGet.config. PackageHub never reads or stores a credential.
+3. Pick one or more projects, then the version. The newest stable version is preselected.
+4. Read the summary (projects, Central Package Management, license, release notes, dependencies) and confirm with **Yes, Add**.
+
+With Central Package Management, `dotnet add package` writes the version to `Directory.Packages.props` and a reference without a version to each project. If one project fails, every file is put back as it was.
+
+### Align drifted versions
+
+When the Package Health view shows a version conflict, click **Align Versions** on it, run `PackageHub: Align Versions`, or use the **Review & align** action in the dashboard. Each major version is aligned on its own, to the highest version already in use there. Only direct references move. Ranges, floating versions and per-target-framework versions are listed as kept.
+
+### What's in this update
+
+Every update, pin and add confirmation lists what changes in the package: the license (and whether it changed), the release notes and the dependencies that were added, dropped or changed. The data comes from the `.nuspec` in the local NuGet cache. If the package is not there yet, the summary says so; turn on `packageHub.onlineLookups` to read it from nuget.org.
+
+### Clean up Central Package Management
+
+`PackageHub: Remove Unused Central Versions` lists the `PackageVersion` entries that no project in the workspace references. Pick the ones to remove and confirm. If a project cannot be read, nothing is removed, because that project might use them.
+
+### Version ranges, floating versions and properties
+
+- `[1.0.0, 2.0.0)`: an update writes `[1.4.0, 2.0.0)`, so the upper bound stays. A version outside the range is refused.
+- `1.*`: when the floating version already covers the target, PackageHub runs restore instead of rewriting it.
+- `$(SerilogVersion)`: the property is updated where it is defined, for example in `Directory.Build.props`. A property set under a `Condition` is left for you to edit.
+
 ### Hide or remove
 
 - **Ignore** hides a package from PackageHub lists only. The build warning stays. **Unignore** brings it back.
@@ -123,11 +169,14 @@ Run **PackageHub: Get Started** for a short walkthrough: open a project, run the
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <img src="media/readme/fsharp.png" alt="F#" width="48" height="48" />
   &nbsp;&nbsp;<strong>F#</strong>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <strong>Visual Basic</strong>
 </p>
 
 - C# project files (`.csproj`)
 - F# project files (`.fsproj`)
-- Visual Studio solutions (`.sln`). `.slnx` files are skipped.
+- Visual Basic project files (`.vbproj`)
+- Visual Studio solutions (`.sln`) and XML solutions (`.slnx`)
 - Central package versions in `Directory.Packages.props`
 - `GlobalPackageReference`, `VersionOverride`, and package elements that span several lines
 
@@ -146,6 +195,9 @@ When you update a package, the new version is written to `Directory.Packages.pro
 | `PackageHub: Get Started` | Opens the walkthrough |
 | `PackageHub: Scan Workspace` | Scans your packages again |
 | `PackageHub: Show Health Dashboard` | Opens the summary and the bulk updates |
+| `PackageHub: Add Package` | Searches for a package and adds it to the projects you pick |
+| `PackageHub: Align Versions` | Brings one package to the same version across projects, inside each major version |
+| `PackageHub: Remove Unused Central Versions` | Removes `PackageVersion` entries no project uses |
 | `PackageHub: Why is this here?` | Shows how the package entered the project |
 | `PackageHub: Dependencies` | Opens the dependency graph for the package on the current line |
 | `PackageHub: Explain Selected Package` | Shows what the last scan found for the package on the current line |
@@ -168,7 +220,9 @@ When you update a package, the new version is written to `Directory.Packages.pro
 | `packageHub.minimumSeverity` | `low` | Lowest severity PackageHub lists: `low`, `moderate`, `high` or `critical`. It does not change `NuGetAuditLevel` in the project |
 | `packageHub.minimumReleaseAge` | `0` | How many days old a latest version must be before it is preferred. `0` is off. The highest-patch suggestion ignores this. Publish dates come from the local NuGet cache |
 | `packageHub.ignoredPackages` | `[]` | Package ids hidden from the lists |
-| `packageHub.onlineLookups` | `false` | Lets PackageHub ask nuget.org itself for advisory ranges and publish dates that are not in the local cache |
+| `packageHub.onlineLookups` | `false` | Lets PackageHub ask nuget.org itself for advisory ranges, publish dates and package metadata that are not in the local cache |
+| `packageHub.badge` | `vulnerable` | What the view badge counts: `vulnerable`, `vulnerableAndOutdated`, `all` (vulnerable, outdated and deprecated) or `off` |
+| `packageHub.rollbackOnFailure` | `true` | Puts every file back when one step of a bulk update or add fails |
 | `packageHub.timeouts.listSeconds` | `120` | Timeout for `dotnet list package` and other quick commands |
 | `packageHub.timeouts.outdatedSeconds` | `300` | Timeout for the outdated and deprecated lists |
 | `packageHub.timeouts.restoreSeconds` | `600` | Timeout for `dotnet restore` and `dotnet add package` |
@@ -179,6 +233,7 @@ When you update a package, the new version is written to `Directory.Packages.pro
 - VS Code 1.74 or newer, or a compatible editor such as Cursor or VSCodium
 - `dotnet` on your PATH
 - .NET SDK 8.0.400 or newer for **Why is this here?**
+- .NET SDK 8.0.200 or newer to search package sources from **Add Package** (the local cache search works with any SDK)
 
 ## Local-first
 
@@ -186,8 +241,9 @@ PackageHub works from what is already on your machine. With the default settings
 
 - **No usage data.** PackageHub does not collect or send telemetry, and there is no account or sign-in. It runs `dotnet` with `DOTNET_CLI_TELEMETRY_OPTOUT=1`.
 - **Your code stays on your machine.** Package data comes from the `dotnet` CLI and from local files: your project files, `project.assets.json`, and the NuGet caches `dotnet` already wrote. `dotnet` itself reads the package sources in your NuGet.config to find vulnerabilities and newer versions, as it does on the command line.
-- **Online lookups are opt-in.** Only when you turn on `packageHub.onlineLookups` does PackageHub contact `api.nuget.org` over HTTPS itself, for advisory version ranges and for the release dates `packageHub.minimumReleaseAge` needs, when they are not in the local cache. It never sends your project files. With it off, a missing release date is reported as unknown and the age gate is not applied.
+- **Online lookups are opt-in.** Only when you turn on `packageHub.onlineLookups` does PackageHub contact `api.nuget.org` over HTTPS itself, for advisory version ranges, for the release dates `packageHub.minimumReleaseAge` needs, and for the `.nuspec` of a version that is not in the local cache. It never sends your project files. With it off, a missing release date is reported as unknown and the age gate is not applied.
 - **Credentials stay where they are.** Feed health uses the source list from `dotnet nuget list source` and the messages `dotnet` printed. PackageHub does not read or store credentials, and it does not contact a feed to test it.
+- **Package search is yours to start.** **Add Package** searches the local NuGet cache first. The package sources are searched only when you pick **Search package sources**, and then `dotnet package search` does it, with your NuGet.config.
 - **Links open only when you click them.** NuGet and advisory pages open in your browser.
 
 The only code path that can reach the network is the opt-in online lookup above. The dashboard, the hover, the lightbulb and the update summary are all built from the last scan and local files.
@@ -196,7 +252,7 @@ The only code path that can reach the network is the opt-in online lookup above.
 
 **Nothing shows on my package lines.** Run `PackageHub: Scan Workspace` and check the **PackageHub** channel in the Output panel. A project the scan could not read stays unmarked on purpose.
 
-**PackageHub does not start.** It starts when the folder has a `.csproj`, `.fsproj`, `.sln` or `Directory.Packages.props` file, and only in a trusted workspace, because `dotnet` and MSBuild can run code from the project. Trust the folder and run `PackageHub: Scan Workspace`.
+**PackageHub does not start.** It starts when the folder has a `.csproj`, `.fsproj`, `.vbproj`, `.sln`, `.slnx` or `Directory.Packages.props` file, and only in a trusted workspace, because `dotnet` and MSBuild can run code from the project. Trust the folder and run `PackageHub: Scan Workspace`.
 
 **`dotnet` was not found.** Make sure `dotnet --version` works in the terminal VS Code opens. On macOS, start VS Code from a terminal once if it does not see your PATH.
 
@@ -212,9 +268,13 @@ The only code path that can reach the network is the opt-in online lookup above.
 
 **Does Ignore hide the build warning?** No. Ignore only hides the package from PackageHub lists. The NU190x warning from `dotnet` stays.
 
-**Does it work with F#?** Yes. `.fsproj` files get the same marks, warnings and actions as C# projects.
+**Does it work with F# and Visual Basic?** Yes. `.fsproj` and `.vbproj` files get the same marks, warnings and actions as C# projects.
 
-**Does it support `.slnx`?** Not yet. `.slnx` files are skipped and logged in the Output panel.
+**Does it support `.slnx`?** Yes, since 0.3.0. `.slnx` solutions are scanned, restored and watched like `.sln` files.
+
+**Search package sources says the command is not recognized.** `dotnet package search` needs .NET SDK 8.0.200 or newer. The local cache search still works.
+
+**Can I use PackageHub in Turkish?** Yes. Install the Turkish language pack for VS Code and pick Turkish with `Configure Display Language`. Commands, settings, the dashboard and the messages follow it.
 
 ## Feedback
 
