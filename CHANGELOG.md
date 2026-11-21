@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
+### Added
+
+- **Add Package**: a command, a **+** button in the Package Health view and an **Add package** tab in the dashboard. The local NuGet cache is searched as you type, offline. The package sources are searched only when you ask, through `dotnet package search` and your NuGet.config. Pick one or more projects and a version, read the summary and confirm. `dotnet add package` writes the reference, so Central Package Management is handled as usual. PackageHub does not read or store credentials.
+- **Align Versions**: one click brings every direct reference of a package to the highest version already used inside the same major version. Available on version conflicts in the Package Health view, from the command palette and as a dashboard action, with the same confirmation. Nothing is downgraded, nothing crosses a major version, and projects that use different versions per target framework keep them.
+- **What's in this update**: update, pin and add confirmations list the license (and license changes), the release notes and the added, dropped and changed dependencies, read from the `.nuspec` in the local NuGet cache. With `packageHub.onlineLookups` on, a missing `.nuspec` is read from nuget.org.
+- `.slnx` solutions are scanned, restored and watched like `.sln` files. When a `.slnx` restore fails, its projects are restored one by one.
+- Visual Basic projects (`.vbproj`) get the same scan, marks, hover, lightbulb and updates as C# and F# projects.
+- **Remove Unused Central Versions** lists the `PackageVersion` entries in `Directory.Packages.props` that no project uses, previews them and removes the ones you pick. Nothing is removed when a project cannot be read.
+- Version ranges, floating versions and `$(Property)` versions: a range update keeps the upper bound and stays inside the range, a floating version that already covers the target is restored instead of rewritten, and a property version is updated where the property is defined. A property set under a `Condition` is left for you to edit.
+- Rollback: when one step of a bulk update, an alignment or an add fails, every file it touched is put back as it was. New setting `packageHub.rollbackOnFailure` (on by default).
+- Line marks are clickable: hover a mark for **Update to …**, **Open Advisory** and **Why is this here?** links.
+- New setting `packageHub.badge`: the view badge can count vulnerable packages (default), vulnerable and outdated, all three, or nothing.
+- Turkish translation of the commands, settings, walkthrough, dashboard and messages. VS Code picks it from the display language; English stays the default.
+
+### Changed
+
+- `PackageHub: Scan Workspace` waits for a scan that is already running, so a command that scans after a change sees fresh results.
+- The `packageHub.onlineLookups` description now names every lookup it allows: advisory ranges, publish dates and package metadata.
+
+
 ## [0.2.0] - 2026-11-09
 
 ### Upgrading
