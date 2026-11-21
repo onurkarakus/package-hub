@@ -44,3 +44,18 @@ export function minimumReleaseAgeDays(): number {
     const value = config().get<number>("minimumReleaseAge");
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
+
+/**
+ * True unless the user turned off packageHub.rollbackOnFailure. When on, a
+ * batch of writes that fails half way puts every file back.
+ */
+export function rollbackEnabled(): boolean {
+    return config().get<boolean>("rollbackOnFailure") !== false;
+}
+
+export type BadgeMode = "vulnerable" | "vulnerableAndOutdated" | "all" | "off";
+
+export function badgeMode(): BadgeMode {
+    const value = config().get<string>("badge");
+    return value === "vulnerableAndOutdated" || value === "all" || value === "off" ? value : "vulnerable";
+}

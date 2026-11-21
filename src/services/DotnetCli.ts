@@ -18,6 +18,7 @@ import {
     RunResult,
     runProcess,
 } from "./ProcessRunner";
+import { isValidSearchQuery, parseExactVersions, parseSearchResults, SearchHit } from "./PackageSearch";
 import { evaluateFromFiles, parseMsbuildEvaluation, ProjectEvaluation } from "./ProjectEvaluation";
 import { DotnetTimeouts } from "./Settings";
 import { vsToolsEnvironment } from "./VsToolsPath";
@@ -366,13 +367,61 @@ export class DotnetCli {
     /**
      * Runs restore. A failure throws with the exit code and the error lines.
      */
-    async restore(targetPath: string, signal?: AbortSignal): Promise<RunResult> {
+    async restore(targetPath: string, signal?: AbortSignal, forceEvaluate = false): Promise<RunResult> {
         assertTargetPath(targetPath);
+        const extra = forceEvaluate ? ["--force-evaluate"] : [];
         const isFile = fs.existsSync(targetPath) && fs.statSync(targetPath).isFile();
         if (isFile) {
-            return this.execOrThrow(["restore", targetPath], path.dirname(targetPath), this.timeouts().restoreMs, signal);
+            return this.execOrThrow(["restore", targetPath, ...extra], path.dirname(targetPath), this.timeouts().restoreMs, signal);
         }
-        return this.execOrThrow(["restore"], targetPath, this.timeouts().restoreMs, signal);
+        return this.execOrThrow(["restore", ...extra], targetPath, this.timeouts().restoreMs, signal);
+    }
+
+    /**
+     * Searches the package sources from NuGet.config with
+     * `dotnet package search`. dotnet handles the feeds and their credentials.
+     * Needs .NET SDK 8.0.200 or newer.
+     */
+    async searchPackages(
+        cwd: string,
+        query: string,
+        includePrerelease = false,
+        take = 20,
+        signal?: AbortSignal
+    ): Promise<{ hits: SearchHit[]; problems: string[] }> {
+        if (!isValidSearchQuery(query)) {
+            throw new InvalidArgumentError(`"${String(query)}" is not a search PackageHub can run. Use letters, digits, dots, dashes and spaces.`);
+        }
+        const args = ["package", "search", query.trim(), "--format", "json", "--take", String(Math.max(1, Math.min(100, take)))];
+        if (includePrerelease) {
+            args.push("--prerelease");
+        }
+        return parseSearchResults(await this.searchJson(args, cwd, signal));
+    }
+
+    /**
+     * Lists every version of one package from the package sources.
+     */
+    async packageVersions(cwd: string, packageId: string, includePrerelease = false, signal?: AbortSignal): Promise<string[]> {
+        assertPackageId(packageId);
+        const args = ["package", "search", packageId, "--exact-match", "--format", "json"];
+        if (includePrerelease) {
+            args.push("--prerelease");
+        }
+        return parseExactVersions(await this.searchJson(args, cwd, signal), packageId);
+    }
+
+    private async searchJson(args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
+        const result = await this.exec(args, cwd, this.timeouts().listMs, signal);
+        const json = extractJson(result.stdout);
+        if (json === undefined) {
+            const text = `${result.stdout}\n${result.stderr}`;
+            if (/unrecognized command|not a valid command|Could not execute because the specified command/i.test(text)) {
+                throw new Error("`dotnet package search` needs .NET SDK 8.0.200 or newer.");
+            }
+            throw new DotnetCommandError("package search", result.exitCode, errorLines(text), text);
+        }
+        return json;
     }
 
     /**

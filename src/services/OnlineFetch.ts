@@ -10,7 +10,14 @@ const MAX_BYTES = 64 * 1024 * 1024;
  * Uses the https module so it works on every supported editor (some ship a
  * Node.js without fetch).
  */
-export function fetchOnlineJson(url: string, timeoutMs = 20000): Promise<any> {
+export async function fetchOnlineJson(url: string, timeoutMs = 20000): Promise<any> {
+    return JSON.parse(await fetchOnlineText(url, timeoutMs, "application/json"));
+}
+
+/**
+ * Same rules as fetchOnlineJson, for text such as a .nuspec file.
+ */
+export function fetchOnlineText(url: string, timeoutMs = 20000, accept = "*/*"): Promise<string> {
     if (!onlineLookupsEnabled()) {
         return Promise.reject(new Error("packageHub.onlineLookups is off."));
     }
@@ -19,7 +26,7 @@ export function fetchOnlineJson(url: string, timeoutMs = 20000): Promise<any> {
     }
     return new Promise((resolve, reject) => {
         const request = https.get(url, {
-            headers: { Accept: "application/json", "Accept-Encoding": "gzip, deflate" },
+            headers: { Accept: accept, "Accept-Encoding": "gzip, deflate" },
             timeout: timeoutMs,
         }, (response) => {
             const status = response.statusCode ?? 0;
@@ -48,7 +55,7 @@ export function fetchOnlineJson(url: string, timeoutMs = 20000): Promise<any> {
                     } else if (encoding === "deflate") {
                         body = zlib.inflateSync(body);
                     }
-                    resolve(JSON.parse(body.toString("utf8")));
+                    resolve(body.toString("utf8"));
                 } catch (error) {
                     reject(error);
                 }
