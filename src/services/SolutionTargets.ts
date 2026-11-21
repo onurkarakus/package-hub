@@ -19,6 +19,41 @@ export function slnxPaths(paths: string[]): string[] {
     return paths.filter((item) => item.toLowerCase().endsWith(".slnx"));
 }
 
+/**
+ * Reads the project paths from an XML solution file (.slnx). Projects can sit
+ * at the top level or inside Folder elements. XML comments are ignored.
+ */
+export function projectPathsInSlnx(solutionText: string, solutionPath: string): string[] {
+    const directory = path.dirname(solutionPath);
+    const found: string[] = [];
+    const masked = solutionText.replace(/<!--[\s\S]*?(-->|$)/g, "");
+    for (const match of masked.matchAll(/<Project\b((?:[^>"']|"[^"]*"|'[^']*')*?)\/?>/gi)) {
+        const attribute = /(?:^|\s)Path\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(match[1]);
+        const value = (attribute?.[1] ?? attribute?.[2] ?? "").trim();
+        if (!value) {
+            continue;
+        }
+        const relative = value.replace(/\\/g, "/");
+        if (!isMsBuildProject(relative)) {
+            continue;
+        }
+        const absolute = path.resolve(directory, relative);
+        if (!found.some((item) => samePath(item, absolute))) {
+            found.push(absolute);
+        }
+    }
+    return found;
+}
+
+/**
+ * Reads the project paths of a .sln or .slnx file from its text.
+ */
+export function projectPathsInSolution(solutionText: string, solutionPath: string): string[] {
+    return solutionPath.toLowerCase().endsWith(".slnx")
+        ? projectPathsInSlnx(solutionText, solutionPath)
+        : csprojPathsInSolution(solutionText, solutionPath);
+}
+
 export function csprojPathsInSolution(solutionText: string, solutionPath: string): string[] {
     const directory = path.dirname(solutionPath);
     const found: string[] = [];
@@ -79,7 +114,7 @@ export async function readSolutionProjects(solutionPaths: string[]): Promise<Sol
             const text = await fs.readFile(solutionPath, "utf8");
             result.push({
                 solutionPath,
-                projects: csprojPathsInSolution(text, solutionPath),
+                projects: projectPathsInSolution(text, solutionPath),
             });
         } catch (error: any) {
             result.push({
@@ -113,7 +148,7 @@ export interface ScanPlan {
 }
 
 /**
- * Decides what to scan: every classic solution that adds at least one project,
+ * Decides what to scan: every solution (.sln or .slnx) that adds at least one project,
  * then every project that no solution covers. A project shared by overlapping
  * solutions is scanned with the first one only (later duplicates are dropped
  * when results are merged).

@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
-import { projectNameFromPath } from "./projectFiles";
-import { classicSolutionPaths } from "./SolutionTargets";
+import { PROJECT_GLOB, projectNameFromPath } from "./projectFiles";
 import { logger } from "../utils/logger";
 
 export class WorkspaceScanner {
@@ -19,7 +18,7 @@ export class WorkspaceScanner {
      */
     watch(): vscode.Disposable {
         const watcher = vscode.workspace.createFileSystemWatcher(
-            "**/{*.csproj,*.fsproj,*.sln,*.slnx,*.props,NuGet.config,nuget.config,NuGet.Config}",
+            "**/{*.csproj,*.fsproj,*.vbproj,*.sln,*.slnx,*.props,NuGet.config,nuget.config,NuGet.Config}",
             false,
             true,
             false
@@ -44,26 +43,26 @@ export class WorkspaceScanner {
     }
 
     /**
-   * Finds every C# and F# project file.
+   * Finds every C#, F# and Visual Basic project file.
    */
     async findProjects(): Promise<vscode.Uri[]> {
-        return this.find("**/*.{csproj,fsproj}", "Could not read projects");
+        return this.find(PROJECT_GLOB, "Could not read projects");
     }
 
     /**
-     * Counts what a scan can read: C# and F# projects plus classic .sln files.
-     * A .sln can point at projects outside the workspace, so it counts on its own.
+     * Counts what a scan can read: projects plus .sln and .slnx files.
+     * A solution can point at projects outside the workspace, so it counts on its own.
      */
     async countScanTargets(): Promise<{ projects: vscode.Uri[]; targets: number }> {
         const [projects, solutions] = await Promise.all([this.findProjects(), this.findSolutions()]);
         return {
             projects,
-            targets: projects.length + classicSolutionPaths(solutions.map((item) => item.fsPath)).length,
+            targets: projects.length + solutions.length,
         };
     }
 
     /**
-   * Finds every .sln file.
+   * Finds every .sln and .slnx file.
    */
     async findSolutions(): Promise<vscode.Uri[]> {
         return this.find("**/*.{sln,slnx}", "Could not read solution files");

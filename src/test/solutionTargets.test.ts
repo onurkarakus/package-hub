@@ -3,6 +3,8 @@ import * as path from "path";
 import {
     classicSolutionPaths,
     csprojPathsInSolution,
+    projectPathsInSlnx,
+    projectPathsInSolution,
     restoreTargetsForProjects,
     slnxPaths,
 } from "../services/SolutionTargets";
@@ -58,6 +60,31 @@ suite("Solution targets", () => {
         assert.deepStrictEqual(csprojPathsInSolution(text, path.join(root, "Included.sln")), [
             library,
         ]);
+    });
+
+    test("a solution lists a vbproj file", () => {
+        const legacy = path.join(root, "Legacy", "Legacy.vbproj");
+        const text = 'Project("{F184B08F-C81C-45F6-A57F-5ABD9991F28F}") = "Legacy", "Legacy\\Legacy.vbproj", "{33333333-3333-3333-3333-333333333333}"\nEndProject';
+        assert.deepStrictEqual(csprojPathsInSolution(text, path.join(root, "Included.sln")), [legacy]);
+    });
+
+    test("an slnx lists projects at the top level and in folders", () => {
+        const slnx = path.join(root, "App.slnx");
+        const text = [
+            "<Solution>",
+            '  <Project Path="AuditQuickFix.csproj" />',
+            '  <Folder Name="/src/">',
+            '    <Project Path="Consumer\\Consumer.csproj" Type="Classic C#" />',
+            '    <Project Path="Legacy/Legacy.vbproj"></Project>',
+            "  </Folder>",
+            '  <!-- <Project Path="Old/Old.csproj" /> -->',
+            '  <Project Path="docs/readme.md" />',
+            '  <Project Path="AuditQuickFix.csproj" />',
+            "</Solution>",
+        ].join("\n");
+        const expected = [audit, consumer, path.join(root, "Legacy", "Legacy.vbproj")];
+        assert.deepStrictEqual(projectPathsInSlnx(text, slnx), expected);
+        assert.deepStrictEqual(projectPathsInSolution(text, slnx), expected);
     });
 
     test("restore uses the solution that contains the project", () => {

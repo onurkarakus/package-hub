@@ -45,7 +45,7 @@ suite("Audit sample", function () {
         const declared = (extension.packageJSON.activationEvents as string[])
             .filter((event) => !event.startsWith("onCommand:") && !event.startsWith("onView:"));
         assert.deepStrictEqual(declared, [
-            "workspaceContains:**/*.{csproj,fsproj,sln,slnx}",
+            "workspaceContains:**/*.{csproj,fsproj,vbproj,sln,slnx}",
             "workspaceContains:**/Directory.Packages.props",
         ]);
         assert.strictEqual(extension.packageJSON.capabilities.untrustedWorkspaces.supported, false);

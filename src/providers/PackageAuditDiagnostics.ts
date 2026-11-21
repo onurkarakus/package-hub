@@ -127,12 +127,10 @@ export class PackageAuditDiagnostics implements vscode.Disposable {
 
             const value = (include[1] ?? include[2]).toLowerCase();
             return value === needle
-                || value.endsWith(`/${needle}.csproj`)
-                || value.endsWith(`\\${needle}.csproj`)
-                || value.endsWith(`${needle}.csproj`)
-                || value.endsWith(`/${needle}.fsproj`)
-                || value.endsWith(`\\${needle}.fsproj`)
-                || value.endsWith(`${needle}.fsproj`);
+                || ["csproj", "fsproj", "vbproj"].some((extension) =>
+                    value.endsWith(`/${needle}.${extension}`)
+                    || value.endsWith(`\\${needle}.${extension}`)
+                    || value.endsWith(`${needle}.${extension}`));
         });
 
         return index >= 0 ? index : 0;

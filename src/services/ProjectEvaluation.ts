@@ -134,7 +134,7 @@ function expandKnown(value: string, projectDirectory: string, projectName: strin
  */
 export async function assetsFileFromFiles(projectPath: string): Promise<string> {
     const projectDirectory = path.dirname(projectPath);
-    const projectName = path.basename(projectPath).replace(/\.(csproj|fsproj)$/i, "");
+    const projectName = path.basename(projectPath).replace(/\.(csproj|fsproj|vbproj)$/i, "");
     const buildProps = await findNearestFile(projectDirectory, "Directory.Build.props");
     const texts: string[] = [];
     if (buildProps) {
