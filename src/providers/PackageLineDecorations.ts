@@ -3,7 +3,8 @@ import { PackageInfo } from "../models/PackageInfo";
 import { isMsBuildProject, isPackageDocumentPath } from "../services/projectFiles";
 import { ScanState } from "../services/ScanState";
 import { WorkspaceScanner } from "../services/WorkspaceScanner";
-import { readPackageRefs } from "../utils/nugetAudit";
+import { isValidPackageVersion, readPackageRefs } from "../utils/nugetAudit";
+import { HOVER_COMMANDS } from "./PackageHoverProvider";
 import {
     packageLineFacts,
     packageLineHasProblem,
@@ -100,7 +101,7 @@ export class PackageLineDecorations implements vscode.Disposable {
                 const end = editor.document.lineAt(line).range.end;
                 const option: vscode.DecorationOptions = {
                     range: new vscode.Range(end, end),
-                    hoverMessage: mark.hover,
+                    hoverMessage: markHover(ref.id, mark, projectName, found.vulnerable?.advisoryUrl ?? rawVulnerable?.advisoryUrl),
                     renderOptions: {
                         after: {
                             contentText: mark.text,
@@ -127,6 +128,45 @@ export class PackageLineDecorations implements vscode.Disposable {
         editor.setDecorations(this.deprecatedMark, deprecated);
         editor.setDecorations(this.currentMark, current);
     }
+}
+
+function commandLink(command: string, args: unknown): string {
+    return `command:${command}?${encodeURIComponent(JSON.stringify(args))}`;
+}
+
+/**
+ * The hover on a line mark: what the mark means, then links that act on the
+ * package right there (update, advisory, why). Only PackageHub commands can
+ * run from it.
+ */
+export function markHover(
+    packageId: string,
+    mark: PackageLineMark,
+    projectName: string | undefined,
+    advisoryUrl: string | undefined
+): vscode.MarkdownString {
+    const md = new vscode.MarkdownString();
+    md.isTrusted = { enabledCommands: [...HOVER_COMMANDS] };
+    md.supportThemeIcons = true;
+    md.appendText(mark.hover);
+    const links: string[] = [];
+    const newer = mark.text.split(" ")[1];
+    if (mark.kind !== "current" && newer && isValidPackageVersion(newer)) {
+        links.push(`[$(arrow-up) ${vscode.l10n.t("Update to {0}", newer)}](${commandLink("packageHub.updateVulnerable", {
+            packageId,
+            version: newer,
+            ...(projectName ? { projectName } : {}),
+        })})`);
+    }
+    if (mark.kind === "vulnerable" && advisoryUrl?.startsWith("https://")) {
+        links.push(`[$(link-external) ${vscode.l10n.t("Open Advisory")}](${commandLink("packageHub.openAdvisory", advisoryUrl)})`);
+    }
+    links.push(`[$(question) ${vscode.l10n.t("Why is this here?")}](${commandLink("packageHub.whyPackage", {
+        packageId,
+        ...(projectName ? { projectName } : {}),
+    })})`);
+    md.appendMarkdown(`\n\n${links.join(" · ")}`);
+    return md;
 }
 
 function installedFacts(

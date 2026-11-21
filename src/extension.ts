@@ -25,14 +25,13 @@ import {
 	versionChange,
 } from "./utils/nugetAudit";
 import { isProjectLoadFailure, projectLoadSummary } from "./services/ProjectLoadFailure";
-import { isMsBuildProject, isPackageDocumentPath, projectNameFromPath } from "./services/projectFiles";
+import { isMsBuildProject, isPackageDocumentPath, PACKAGE_DOCUMENT_GLOB, projectNameFromPath } from "./services/projectFiles";
 import { provenProjectNames } from "./services/provenProjects";
 import {
-	classicSolutionPaths,
 	planScanTargets,
 	readSolutionProjects,
 	restoreTargetsForProjects,
-	slnxPaths,
+	SolutionProjects,
 } from "./services/SolutionTargets";
 import { isPackageProjectFile, ScanGate } from "./services/ScanGate";
 import { PackageAuditDiagnostics } from "./providers/PackageAuditDiagnostics";
@@ -48,17 +47,34 @@ import { parseFeedFailures, recordFeedFailures, resetFeedFailures } from "./serv
 import { refreshFeedSources } from "./services/FeedHealthLoader";
 import { defaultHttpCachePath, setHttpCacheRoot } from "./services/NuGetLocalCache";
 import { forgetAssetsFiles, rememberAssetsFile } from "./services/AssetsLocator";
-import { planVersionEdit, ProjectEvaluation, setPackageVersionInXml, EditPlan } from "./services/ProjectEvaluation";
+import { findNearestFile, planVersionEdit, ProjectEvaluation, setPackageVersionInXml, EditPlan } from "./services/ProjectEvaluation";
 import { Debouncer, WriteQueue } from "./services/WriteQueue";
 import { buildUpdateSummary, UpdateSummaryAdvisory, UpdateSummaryProject } from "./services/UpdateSummary";
 import { highestPatchFromLocal } from "./services/PatchFallback";
 import { projectScope, withoutDowngrades } from "./services/UpdateScope";
+import { FileSnapshot } from "./services/FileSnapshot";
+import { findPropertyDefinition, planVersionWrite, setPropertyInXml } from "./services/VersionSpec";
+import {
+	defaultGlobalPackagesPath,
+	describeUpdateDetails,
+	licenseText,
+	lowestVersion,
+	NuspecInfo,
+	parseNuspec,
+	readCachedNuspec,
+} from "./services/PackageDetails";
+import { fetchOnlineText } from "./services/OnlineFetch";
+import { isValidSearchQuery, mergeHits, newestVersion, SearchHit, searchLocalPackages, sortVersionsDescending } from "./services/PackageSearch";
+import { alignablePackages, AlignPlan, planAlignment } from "./services/Consolidate";
+import { findUnusedCentralVersions, removePackageVersionsFromXml } from "./services/UnusedCentralVersions";
+import { rollbackEnabled } from "./services/Settings";
 
 let dotnetCli: DotnetCli;
 let workspaceScanner: WorkspaceScanner;
 
 const PROJECT_SCAN_CONCURRENCY = 2;
 const scanGate = new ScanGate();
+let runningScan: Promise<void> | undefined;
 const writeQueue = new WriteQueue();
 const evaluations = new Map<string, Promise<ProjectEvaluation>>();
 /** Files PackageHub saves itself. Their save does not start another scan. */
@@ -184,7 +200,7 @@ async function suppressTarget(packageId: string): Promise<vscode.Uri | undefined
 			label: workspaceScanner.getProjectName(project),
 			uri: project,
 		})),
-		{ placeHolder: "Which project should the suppress entry be written to?" }
+		{ placeHolder: vscode.l10n.t("Which project should the suppress entry be written to?") }
 	);
 	return picked?.uri;
 }
@@ -192,20 +208,20 @@ async function suppressTarget(packageId: string): Promise<vscode.Uri | undefined
 async function openSuppressDiff(packageId: string, url: string): Promise<void> {
 	const uri = await suppressTarget(packageId);
 	if (!uri) {
-		vscode.window.showWarningMessage("No csproj was found for this package. The suppress entry was not written.");
+		vscode.window.showWarningMessage(vscode.l10n.t("No project file was found for this package. The suppress entry was not written."));
 		return;
 	}
 
 	const document = await vscode.workspace.openTextDocument(uri);
 	const text = document.getText();
 	if (alreadySuppressed(text, url)) {
-		vscode.window.showInformationMessage("This advisory is already in NuGetAuditSuppress.");
+		vscode.window.showInformationMessage(vscode.l10n.t("This advisory is already in NuGetAuditSuppress."));
 		return;
 	}
 
 	const closing = text.lastIndexOf("</Project>");
 	if (closing < 0) {
-		vscode.window.showErrorMessage("The csproj has no closing tag. The suppress entry was not written.");
+		vscode.window.showErrorMessage(vscode.l10n.t("The project file has no closing tag. The suppress entry was not written."));
 		return;
 	}
 
@@ -221,7 +237,7 @@ async function openSuppressDiff(packageId: string, url: string): Promise<void> {
 	edit.insert(uri, document.positionAt(closing), snippet);
 	const applied = await vscode.workspace.applyEdit(edit);
 	if (!applied) {
-		vscode.window.showErrorMessage("The suppress draft could not be opened. The file was not changed.");
+		vscode.window.showErrorMessage(vscode.l10n.t("The suppress draft could not be opened. The file was not changed."));
 		return;
 	}
 
@@ -236,7 +252,7 @@ async function openSuppressDiff(packageId: string, url: string): Promise<void> {
 		logger.info(`The diff command did not open: ${error?.message || error}`);
 	}
 	vscode.window.showInformationMessage(
-		"The suppress draft opened in a diff. Save it, then run Restore All. If you do not save, the file stays unchanged."
+		vscode.l10n.t("The suppress draft opened in a diff. Save it, then run Restore All. If you do not save, the file stays unchanged.")
 	);
 }
 
@@ -388,13 +404,13 @@ function groupByProject(entries: PackageEntry[]): Map<string, PackageEntry[]> {
  * Restores the solutions or projects that hold the given projects. An empty
  * list restores nothing. Throws when any restore fails.
  */
-async function restoreForProjects(projectPaths: string[], signal?: AbortSignal): Promise<void> {
+async function restoreForProjects(projectPaths: string[], signal?: AbortSignal, forceEvaluate = false): Promise<void> {
 	if (projectPaths.length === 0) {
 		return;
 	}
 
 	const found = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
-	const membership = await readSolutionProjects(classicSolutionPaths(found));
+	const membership: SolutionProjects[] = await readSolutionProjects(found);
 	for (const solution of membership) {
 		if (solution.error) {
 			logger.error(`Could not read the solution (${solution.solutionPath}): ${solution.error}`);
@@ -404,16 +420,35 @@ async function restoreForProjects(projectPaths: string[], signal?: AbortSignal):
 	const failures: string[] = [];
 	for (const target of restoreTargetsForProjects(membership, projectPaths)) {
 		try {
-			await dotnetCli.restore(target, signal);
+			await dotnetCli.restore(target, signal, forceEvaluate);
 		} catch (error) {
 			if (signal?.aborted) {
 				throw error;
+			}
+			// Older SDKs cannot restore a .slnx. Restore its projects one by one instead.
+			const members = target.toLowerCase().endsWith(".slnx")
+				? membership.find((item) => pathKey(item.solutionPath) === pathKey(target))?.projects ?? []
+				: [];
+			const wanted = members.filter((member) => projectPaths.some((item) => pathKey(item) === pathKey(member)));
+			if (wanted.length > 0) {
+				logger.info(`dotnet could not restore ${path.basename(target)} as a whole. Restoring its projects one by one.`);
+				for (const member of wanted) {
+					try {
+						await dotnetCli.restore(member, signal, forceEvaluate);
+					} catch (memberError) {
+						if (signal?.aborted) {
+							throw memberError;
+						}
+						failures.push(`${path.basename(member)}: ${errorText(memberError)}`);
+					}
+				}
+				continue;
 			}
 			failures.push(`${path.basename(target)}: ${errorText(error)}`);
 		}
 	}
 	if (failures.length > 0) {
-		throw new Error(`Restore failed.\n${failures.join("\n")}`);
+		throw new Error(`${vscode.l10n.t("Restore failed.")}\n${failures.join("\n")}`);
 	}
 }
 
@@ -456,91 +491,406 @@ interface WriteTarget {
 	projectName: string;
 }
 
+interface WriteContext {
+	/** File + package (or file + property) pairs already written in this batch. */
+	editedFiles: Set<string>;
+	/** Projects whose floating version or range already covers the target: restore only. */
+	forceEvaluate: Set<string>;
+}
+
+/**
+ * Replaces the whole text of a file through the editor, so open editors and
+ * undo stay in step. The save does not start another scan.
+ */
+async function rewriteFile(filePath: string, transform: (text: string) => string | undefined, failure: string): Promise<void> {
+	const uri = vscode.Uri.file(filePath);
+	const document = await vscode.workspace.openTextDocument(uri);
+	const text = document.getText();
+	const next = transform(text);
+	if (next === undefined) {
+		throw new Error(failure);
+	}
+	if (next === text) {
+		return;
+	}
+	const edit = new vscode.WorkspaceEdit();
+	edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(text.length)), next);
+	ownSaves.add(pathKey(filePath));
+	try {
+		if (!await vscode.workspace.applyEdit(edit) || !await document.save()) {
+			throw new Error(vscode.l10n.t("{0} could not be written.", path.basename(filePath)));
+		}
+	} finally {
+		setTimeout(() => ownSaves.delete(pathKey(filePath)), 1500);
+	}
+}
+
+async function readText(filePath: string | undefined): Promise<string | undefined> {
+	if (!filePath) {
+		return undefined;
+	}
+	try {
+		return (await vscode.workspace.openTextDocument(vscode.Uri.file(filePath))).getText();
+	} catch {
+		return undefined;
+	}
+}
+
+interface DeclaredVersion {
+	filePath: string;
+	tag: "PackageVersion" | "GlobalPackageReference" | "PackageReference";
+	attribute: "Version" | "VersionOverride";
+	raw: string;
+}
+
+/**
+ * Finds the text written for a package version, before MSBuild expands it:
+ * it may be an exact version, a range, a floating version or a property.
+ */
+async function declaredVersionFor(plan: EditPlan, evaluation: ProjectEvaluation | undefined, target: WriteTarget): Promise<DeclaredVersion | undefined> {
+	const id = target.packageId.toLowerCase();
+	const lookup = async (filePath: string | undefined, tag: DeclaredVersion["tag"], attribute: DeclaredVersion["attribute"]) => {
+		const text = await readText(filePath);
+		if (!filePath || text === undefined) {
+			return undefined;
+		}
+		const ref = readPackageRefs(text).find((item) => item.tag === tag && item.id.toLowerCase() === id);
+		const raw = attribute === "VersionOverride" ? ref?.versionOverride : ref?.declaredVersion;
+		return raw ? { filePath, tag, attribute, raw } : undefined;
+	};
+	if (plan.kind === "xml-edit") {
+		return lookup(plan.filePath, plan.tag, plan.attribute);
+	}
+	if (evaluation?.cpmEnabled) {
+		return lookup(evaluation.propsPath ?? await findNearestFile(path.dirname(target.projectPath), "Directory.Packages.props"), "PackageVersion", "Version");
+	}
+	return await lookup(target.projectPath, "PackageReference", "Version")
+		?? await lookup(await findNearestFile(path.dirname(target.projectPath), "Directory.Build.props"), "PackageReference", "Version");
+}
+
+/**
+ * The files a property can be defined in for a project, in the order MSBuild
+ * reads them: Directory.Build.props, Directory.Packages.props, the project.
+ */
+async function propertyFiles(target: WriteTarget, evaluation: ProjectEvaluation | undefined): Promise<{ filePath: string; text: string }[]> {
+	const candidates = [
+		await findNearestFile(path.dirname(target.projectPath), "Directory.Build.props"),
+		evaluation?.propsPath ?? await findNearestFile(path.dirname(target.projectPath), "Directory.Packages.props"),
+		target.projectPath,
+	];
+	const files: { filePath: string; text: string }[] = [];
+	for (const filePath of candidates) {
+		const text = await readText(filePath);
+		if (filePath && text !== undefined && !files.some((item) => pathKey(item.filePath) === pathKey(filePath))) {
+			files.push({ filePath, text });
+		}
+	}
+	return files;
+}
+
 /**
  * Writes one version for one package in one project, as planned from the
- * MSBuild evaluation. Returns the files edited directly.
+ * MSBuild evaluation. Exact versions go through the usual path. A range keeps
+ * its upper bound, a floating version that already covers the target only
+ * needs a restore, and a $(Property) gets its definition edited.
  */
-async function applyVersionEdit(plan: EditPlan, target: WriteTarget, editedFiles: Set<string>): Promise<void> {
-	if (plan.kind === "dotnet-add") {
+async function applyVersionEdit(plan: EditPlan, target: WriteTarget, context: WriteContext, evaluation?: ProjectEvaluation): Promise<void> {
+	const declared = await declaredVersionFor(plan, evaluation, target);
+	let write = declared ? planVersionWrite(declared.raw, target.version) : { kind: "write" as const, text: target.version };
+
+	if (write.kind === "property") {
+		const name = write.name;
+		const definition = findPropertyDefinition(await propertyFiles(target, evaluation), name);
+		if (definition === "conditional") {
+			throw new Error(vscode.l10n.t("$({0}) is set under a Condition. Edit it by hand.", name));
+		}
+		if (!definition) {
+			throw new Error(vscode.l10n.t("$({0}) is not defined in the project, Directory.Build.props or Directory.Packages.props. Edit it by hand.", name));
+		}
+		const key = `${pathKey(definition.filePath)}\n$(${name.toLowerCase()})`;
+		if (context.editedFiles.has(key)) {
+			return;
+		}
+		const inner = planVersionWrite(definition.value, target.version);
+		if (inner.kind === "refused" || inner.kind === "property") {
+			throw new Error(inner.kind === "refused" ? inner.reason : vscode.l10n.t("$({0}) points at another property. Edit it by hand.", name));
+		}
+		if (inner.kind === "restore-only") {
+			context.forceEvaluate.add(pathKey(target.projectPath));
+			return;
+		}
+		await rewriteFile(
+			definition.filePath,
+			(text) => setPropertyInXml(text, name, inner.text),
+			vscode.l10n.t("{0} has no {1} property. Nothing was written.", path.basename(definition.filePath), name)
+		);
+		logger.info(`${target.packageId}: set $(${name}) to ${inner.text} in ${definition.filePath}.`);
+		context.editedFiles.add(key);
+		return;
+	}
+
+	if (write.kind === "refused") {
+		throw new Error(write.reason);
+	}
+	if (write.kind === "restore-only") {
+		logger.info(`${target.packageId} in ${target.projectName}: ${write.reason}`);
+		context.forceEvaluate.add(pathKey(target.projectPath));
+		return;
+	}
+
+	const exact = !declared || write.text === target.version;
+	if (exact && plan.kind === "dotnet-add") {
 		await dotnetCli.updatePackage(target.projectPath, target.packageId, target.version);
 		return;
 	}
 
-	const key = `${pathKey(plan.filePath)}\n${target.packageId.toLowerCase()}`;
-	if (editedFiles.has(key)) {
+	const location = declared ?? (plan.kind === "xml-edit" ? { filePath: plan.filePath, tag: plan.tag, attribute: plan.attribute, raw: "" } : undefined);
+	if (!location) {
+		await dotnetCli.updatePackage(target.projectPath, target.packageId, target.version);
 		return;
 	}
-	const uri = vscode.Uri.file(plan.filePath);
-	const document = await vscode.workspace.openTextDocument(uri);
-	const text = document.getText();
-	const next = setPackageVersionInXml(text, plan.tag, target.packageId, plan.attribute, target.version);
-	if (next === undefined) {
-		throw new Error(`${path.basename(plan.filePath)} has no ${plan.tag} ${plan.attribute} for ${target.packageId}. Nothing was written.`);
+	const key = `${pathKey(location.filePath)}\n${target.packageId.toLowerCase()}`;
+	if (context.editedFiles.has(key)) {
+		return;
 	}
-	const edit = new vscode.WorkspaceEdit();
-	edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(text.length)), next);
-	ownSaves.add(pathKey(plan.filePath));
-	try {
-		if (!await vscode.workspace.applyEdit(edit) || !await document.save()) {
-			throw new Error(`${path.basename(plan.filePath)} could not be written.`);
+	const value = write.text;
+	await rewriteFile(
+		location.filePath,
+		(text) => setPackageVersionInXml(text, location.tag, target.packageId, location.attribute, value),
+		vscode.l10n.t("{0} has no {1} {2} for {3}. Nothing was written.", path.basename(location.filePath), location.tag, location.attribute, target.packageId)
+	);
+	context.editedFiles.add(key);
+}
+
+/**
+ * Every file a write for these targets can touch: the project files, the
+ * props files above them, lock files and the files the evaluation names.
+ */
+async function filesTouchedBy(targets: WriteTarget[]): Promise<string[]> {
+	const files = new Set<string>();
+	for (const target of targets) {
+		files.add(target.projectPath);
+		files.add(path.join(path.dirname(target.projectPath), "packages.lock.json"));
+		for (const name of ["Directory.Packages.props", "Directory.Build.props", "Directory.Build.targets"]) {
+			const found = await findNearestFile(path.dirname(target.projectPath), name);
+			if (found) {
+				files.add(found);
+			}
 		}
-	} finally {
-		setTimeout(() => ownSaves.delete(pathKey(plan.filePath)), 1500);
+		const evaluation = await evaluationFor(target.projectPath).catch(() => undefined);
+		if (evaluation?.propsPath) {
+			files.add(evaluation.propsPath);
+		}
+		for (const item of [...evaluation?.packageReferences ?? [], ...evaluation?.globalPackageReferences ?? [], ...evaluation?.packageVersions ?? []]) {
+			if (item.definingFile && item.id.toLowerCase() === target.packageId.toLowerCase()) {
+				files.add(item.definingFile);
+			}
+		}
 	}
-	editedFiles.add(key);
+	return [...files];
+}
+
+interface WriteResult {
+	written: WriteTarget[];
+	failed: string[];
+	/** Set when a failure put every file back as it was before the batch. */
+	rolledBack?: { restored: number; notRestored: string[] };
 }
 
 /**
  * Writes every target, then restores the touched projects. Each failure is
  * reported with dotnet's exit code and error lines. Success is reported only
  * for what really succeeded.
+ *
+ * With more than one target, the files are saved first. When a write or the
+ * restore after it fails, every file goes back to how it was and nothing of
+ * the batch stays half done (packageHub.rollbackOnFailure).
  */
-async function writeTargets(label: string, targets: WriteTarget[], progress: vscode.Progress<{ message?: string }>): Promise<{ written: WriteTarget[]; failed: string[] }> {
+async function writeTargets(
+	label: string,
+	targets: WriteTarget[],
+	progress: vscode.Progress<{ message?: string }>,
+	options: { rollback?: boolean } = {}
+): Promise<WriteResult> {
 	const written: WriteTarget[] = [];
 	const failed: string[] = [];
-	const editedFiles = new Set<string>();
+	const context: WriteContext = { editedFiles: new Set<string>(), forceEvaluate: new Set<string>() };
+	const useRollback = (options.rollback ?? targets.length > 1) && rollbackEnabled();
+	const snapshot = new FileSnapshot();
+	if (useRollback) {
+		await snapshot.capture(await filesTouchedBy(targets));
+	}
+
 	for (const target of targets) {
 		progress.report({ message: `${target.packageId} → ${target.version} (${target.projectName})` });
 		try {
 			const evaluation = await evaluationFor(target.projectPath).catch(() => undefined);
-			await applyVersionEdit(planVersionEdit(evaluation, target.projectPath, target.packageId), target, editedFiles);
+			await applyVersionEdit(planVersionEdit(evaluation, target.projectPath, target.packageId), target, context, evaluation);
 			written.push(target);
 		} catch (error) {
 			failed.push(`${target.packageId} in ${target.projectName}: ${errorText(error)}`);
 			logger.error(`${label}: ${target.packageId} in ${target.projectName} failed: ${errorText(error)}`);
+			if (useRollback) {
+				break;
+			}
 		}
 	}
 
 	forgetEvaluations();
-	if (written.length > 0) {
-		progress.report({ message: "Restore is running..." });
+	const rollBack = async (): Promise<WriteResult> => {
+		progress.report({ message: vscode.l10n.t("Something failed. Putting the files back...") });
+		const { restored, failed: notRestored } = await snapshot.restore();
+		forgetEvaluations();
+		logger.info(`${label}: rolled back ${restored.length} file(s).${notRestored.length > 0 ? ` Could not put back: ${notRestored.join(", ")}` : ""}`);
 		try {
-			await restoreForProjects([...new Set(written.map((target) => target.projectPath))]);
+			await restoreForProjects([...new Set(targets.map((target) => target.projectPath))]);
+		} catch (error) {
+			logger.error(`${label}: restore after the rollback failed: ${errorText(error)}`);
+		}
+		return { written: [], failed, rolledBack: { restored: restored.length, notRestored } };
+	};
+
+	if (failed.length > 0 && useRollback && written.length > 0) {
+		return rollBack();
+	}
+
+	if (written.length > 0) {
+		progress.report({ message: vscode.l10n.t("Restore is running...") });
+		const touched = [...new Set(written.map((target) => target.projectPath))];
+		try {
+			const plain = touched.filter((projectPath) => !context.forceEvaluate.has(pathKey(projectPath)));
+			const forced = touched.filter((projectPath) => context.forceEvaluate.has(pathKey(projectPath)));
+			await restoreForProjects(plain);
+			await restoreForProjects(forced, undefined, true);
 		} catch (error) {
 			failed.push(errorText(error));
+			if (useRollback) {
+				return rollBack();
+			}
 		}
 	}
 	return { written, failed };
 }
 
-function reportWriteResult(label: string, written: number, total: number, failed: string[]): void {
+function reportWriteResult(label: string, written: number, total: number, failed: string[], rolledBack?: WriteResult["rolledBack"]): void {
 	if (failed.length === 0) {
-		void vscode.window.showInformationMessage(`${label}: updated ${written} of ${total}.`);
+		void vscode.window.showInformationMessage(vscode.l10n.t("{0}: updated {1} of {2}.", label, written, total));
 		return;
 	}
 	logger.show(true);
+	if (rolledBack) {
+		const tail = rolledBack.notRestored.length > 0
+			? `\n\n${vscode.l10n.t("These files could not be put back: {0}", rolledBack.notRestored.join(", "))}`
+			: "";
+		void vscode.window.showErrorMessage(
+			vscode.l10n.t("{0} failed. Every file was put back as it was; nothing was updated.", label),
+			{ modal: true, detail: `${failed.join("\n\n")}${tail}` }
+		);
+		return;
+	}
 	void vscode.window.showErrorMessage(
 		written > 0
-			? `${label}: ${written} of ${total} written, but something failed. Nothing below was updated.`
-			: `${label} failed. Nothing was updated.`,
+			? vscode.l10n.t("{0}: {1} of {2} written, but something failed. Nothing below was updated.", label, written, total)
+			: vscode.l10n.t("{0} failed. Nothing was updated.", label),
 		{ modal: true, detail: failed.join("\n\n") }
 	);
+}
+
+let globalPackagesRoot: Promise<string> | undefined;
+
+/** The global packages folder (for example ~/.nuget/packages), read once. */
+function packagesRoot(): Promise<string> {
+	if (!globalPackagesRoot) {
+		globalPackagesRoot = (async () => {
+			const root = workspaceScanner.getWorkspaceRoot() || process.cwd();
+			try {
+				const found = await dotnetCli.localsPath("global-packages", root);
+				if (found) {
+					return found;
+				}
+			} catch (error) {
+				logger.info(`dotnet nuget locals failed. Using the default packages folder: ${errorText(error)}`);
+			}
+			return defaultGlobalPackagesPath();
+		})();
+	}
+	return globalPackagesRoot;
+}
+
+/**
+ * Reads a package's .nuspec from the local cache, or from nuget.org when
+ * packageHub.onlineLookups is on and the cache does not have it.
+ */
+async function loadNuspec(packageId: string, version: string): Promise<{ info?: NuspecInfo; source?: "cache" | "online" }> {
+	const cached = await readCachedNuspec(await packagesRoot(), packageId, version);
+	if (cached) {
+		return { info: cached, source: "cache" };
+	}
+	if (!onlineLookupsEnabled()) {
+		return {};
+	}
+	const id = encodeURIComponent(packageId.toLowerCase());
+	const ver = encodeURIComponent(version.toLowerCase());
+	try {
+		const info = parseNuspec(await fetchOnlineText(`https://api.nuget.org/v3-flatcontainer/${id}/${ver}/${id}.nuspec`, 15000, "application/xml"));
+		return info ? { info, source: "online" } : {};
+	} catch (error) {
+		logger.info(`Could not read the package metadata of ${packageId} ${version} online: ${errorText(error)}`);
+		return {};
+	}
+}
+
+/** "What's in this update" lines for the confirmation. Never throws. */
+async function updateDetailsLines(packageId: string, fromVersions: (string | undefined)[], toVersion: string): Promise<string[]> {
+	try {
+		const fromVersion = lowestVersion(fromVersions);
+		const [to, from] = await Promise.all([
+			loadNuspec(packageId, toVersion),
+			fromVersion ? loadNuspec(packageId, fromVersion) : Promise.resolve({} as { info?: NuspecInfo }),
+		]);
+		return describeUpdateDetails({
+			packageId,
+			toVersion,
+			to: to.info,
+			source: to.source,
+			from: from.info,
+			fromVersion,
+			online: onlineLookupsEnabled(),
+		});
+	} catch (error) {
+		logger.info(`Could not read what is in ${packageId} ${toVersion}: ${errorText(error)}`);
+		return [];
+	}
+}
+
+/** License changes for a bulk update, read from the local cache only. */
+async function licenseChangeLines(targets: { packageId: string; from: string; version: string }[]): Promise<string[]> {
+	const root = await packagesRoot();
+	const lines: string[] = [];
+	const seen = new Set<string>();
+	for (const target of targets) {
+		const key = `${target.packageId}\n${target.from}\n${target.version}`.toLowerCase();
+		if (seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		const [from, to] = await Promise.all([
+			readCachedNuspec(root, target.packageId, target.from),
+			readCachedNuspec(root, target.packageId, target.version),
+		]);
+		const before = licenseText(from);
+		const after = licenseText(to);
+		if (before && after && before !== after) {
+			lines.push(vscode.l10n.t("License changes for {0}: {1} → {2}", target.packageId, before, after));
+		}
+	}
+	return lines;
 }
 
 async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	const projects = await workspaceScanner.findProjects();
 	if (projects.length === 0) {
-		vscode.window.showErrorMessage("No .csproj or .fsproj file was found in the workspace.");
+		vscode.window.showErrorMessage(vscode.l10n.t("No .csproj, .fsproj or .vbproj file was found in the workspace."));
 		return;
 	}
 
@@ -558,7 +908,7 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 				}
 
 				const projectName = workspaceScanner.getProjectName(project);
-				progress.report({ message: `Reading ${label}: ${projectName}` });
+				progress.report({ message: vscode.l10n.t("Reading {0}: {1}", label, projectName) });
 
 				let listed: PackageInfo[];
 				try {
@@ -607,38 +957,618 @@ async function applySafeUpdate(channel: "patch" | "minor"): Promise<void> {
 	}
 
 	if (targets.length === 0) {
-		vscode.window.showInformationMessage(`No packages to update for ${label}. Major versions and prereleases are not written.`);
+		vscode.window.showInformationMessage(vscode.l10n.t("No packages to update for {0}. Major versions and prereleases are not written.", label));
 		return;
 	}
 
 	const preview = targets
 		.slice(0, 15)
 		.map((target) => `${target.packageId} ${target.from} → ${target.version} (${target.projectName}, ${versionChange(target.from, target.version)})`);
-	const extra = targets.length > 15 ? `\n… and ${targets.length - 15} more` : "";
+	const extra = targets.length > 15 ? `\n${vscode.l10n.t("… and {0} more", targets.length - 15)}` : "";
+	const licenses = await licenseChangeLines(targets);
+	const yes = vscode.l10n.t("Yes, Update");
 	const confirm = await vscode.window.showWarningMessage(
-		`${label}: ${targets.length} update${targets.length === 1 ? "" : "s"}`,
+		targets.length === 1 ? vscode.l10n.t("{0}: 1 update", label) : vscode.l10n.t("{0}: {1} updates", label, targets.length),
 		{
 			modal: true,
-			detail: `${preview.join("\n")}${extra}\n\nMajor versions and prereleases are not written.`,
+			detail: [
+				`${preview.join("\n")}${extra}`,
+				...(licenses.length > 0 ? [licenses.join("\n")] : []),
+				vscode.l10n.t("Major versions and prereleases are not written."),
+				...(rollbackEnabled() && targets.length > 1 ? [vscode.l10n.t("If one update fails, every file is put back as it was.")] : []),
+			].join("\n\n"),
 		},
-		"Yes, Update"
+		yes
 	);
 
-	if (confirm !== "Yes, Update") {
+	if (confirm !== yes) {
 		return;
 	}
 
 	await writeQueue.run(async () => vscode.window.withProgress(
 		{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
 		async (progress) => {
-			const { written, failed } = await writeTargets(label, targets, progress);
+			const { written, failed, rolledBack } = await writeTargets(label, targets, progress);
 			logger.info(`${label}: ${written.length} of ${targets.length} written.`);
-			reportWriteResult(label, written.length, targets.length, failed);
+			reportWriteResult(label, written.length, targets.length, failed, rolledBack);
 			if (written.length > 0) {
 				await vscode.commands.executeCommand("packageHub.scanWorkspace");
 			}
 		}
 	));
+}
+
+// ======================
+// Add a package
+// ======================
+
+interface PackagePickItem extends vscode.QuickPickItem {
+	hit?: SearchHit;
+	feedSearch?: boolean;
+}
+
+/**
+ * Lets the user type a package name. The local NuGet cache answers as they
+ * type. The package sources are searched only when they pick
+ * "Search package sources", through `dotnet package search`.
+ */
+async function pickPackageToAdd(initialQuery = ""): Promise<{ hit: SearchHit; searchedFeeds: boolean } | undefined> {
+	const root = await packagesRoot();
+	const cwd = workspaceScanner.getWorkspaceRoot() || process.cwd();
+	const prerelease = ScanState.includePrerelease();
+	const picker = vscode.window.createQuickPick<PackagePickItem>();
+	picker.title = vscode.l10n.t("PackageHub: Add Package");
+	picker.placeholder = vscode.l10n.t("Type a package name. The local NuGet cache is searched first, offline.");
+	picker.matchOnDescription = true;
+	picker.matchOnDetail = true;
+	let feedHits: SearchHit[] = [];
+	let localHits: SearchHit[] = [];
+	let searchedFeedsFor = "";
+	let generation = 0;
+
+	const render = () => {
+		const query = picker.value.trim();
+		const merged = mergeHits(localHits, feedHits.filter((hit) => !query || hit.id.toLowerCase().includes(query.toLowerCase().split(/\s+/)[0] ?? "")));
+		const items: PackagePickItem[] = merged.map((hit) => ({
+			label: `${hit.source === "feed" ? "$(cloud)" : "$(package)"} ${hit.id}`,
+			description: newestVersion(hit.versions, prerelease) ?? hit.latestVersion ?? "",
+			detail: hit.description ? hit.description.replace(/\s+/g, " ").slice(0, 160) : undefined,
+			hit,
+			alwaysShow: true,
+		}));
+		if (query && isValidSearchQuery(query) && searchedFeedsFor !== query.toLowerCase()) {
+			items.push({
+				label: `$(search) ${vscode.l10n.t("Search package sources for \"{0}\"", query)}`,
+				detail: vscode.l10n.t("Runs dotnet package search with the feeds in your NuGet.config."),
+				feedSearch: true,
+				alwaysShow: true,
+			});
+		}
+		if (query && items.length === 0) {
+			items.push({ label: vscode.l10n.t("Use letters, digits, dots and dashes in the package name."), alwaysShow: true });
+		}
+		picker.items = items;
+	};
+
+	const searchLocal = async () => {
+		const mine = ++generation;
+		const query = picker.value.trim();
+		if (!query) {
+			localHits = [];
+			render();
+			return;
+		}
+		const found = await searchLocalPackages(root, query, 25);
+		if (mine === generation) {
+			localHits = found;
+			render();
+		}
+	};
+
+	return new Promise((resolve) => {
+		let settled = false;
+		const done = (value: { hit: SearchHit; searchedFeeds: boolean } | undefined) => {
+			if (!settled) {
+				settled = true;
+				resolve(value);
+				picker.dispose();
+			}
+		};
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		picker.onDidChangeValue(() => {
+			if (timer) {
+				clearTimeout(timer);
+			}
+			timer = setTimeout(() => void searchLocal(), 120);
+		});
+		picker.onDidAccept(async () => {
+			const item = picker.selectedItems[0];
+			if (!item) {
+				return;
+			}
+			if (item.hit) {
+				done({ hit: item.hit, searchedFeeds: searchedFeedsFor !== "" });
+				return;
+			}
+			if (!item.feedSearch) {
+				return;
+			}
+			const query = picker.value.trim();
+			picker.busy = true;
+			picker.enabled = false;
+			try {
+				const result = await dotnetCli.searchPackages(cwd, query, prerelease, 25);
+				feedHits = result.hits;
+				searchedFeedsFor = query.toLowerCase();
+				for (const problem of result.problems) {
+					logger.info(`Package search: ${problem}`);
+				}
+				if (result.hits.length === 0) {
+					void vscode.window.showInformationMessage(vscode.l10n.t("No package matched \"{0}\" in the package sources.", query));
+				}
+			} catch (error) {
+				showFailure(vscode.l10n.t("Package search failed"), error);
+			} finally {
+				picker.busy = false;
+				picker.enabled = true;
+				render();
+			}
+		});
+		picker.onDidHide(() => done(undefined));
+		picker.value = initialQuery;
+		picker.show();
+		void searchLocal();
+	});
+}
+
+interface VersionPickItem extends vscode.QuickPickItem {
+	version?: string;
+	loadMore?: boolean;
+}
+
+async function pickVersionToAdd(hit: SearchHit, preferred?: string): Promise<string | undefined> {
+	const prerelease = ScanState.includePrerelease();
+	const cwd = workspaceScanner.getWorkspaceRoot() || process.cwd();
+	let versions = sortVersionsDescending(hit.versions);
+	let loaded = hit.source === "feed" && versions.length > 1;
+	const local = new Set((await searchLocalPackages(await packagesRoot(), hit.id, 5))
+		.find((item) => item.id.toLowerCase() === hit.id.toLowerCase())?.versions ?? []);
+
+	for (; ;) {
+		const hasStable = versions.some((version) => !/-/.test(version));
+		const showAll = prerelease || !hasStable;
+		const newest = newestVersion(versions, showAll);
+		const items: VersionPickItem[] = versions
+			.filter((version) => showAll || !/-/.test(version) || version === preferred)
+			.map((version) => ({
+				label: version,
+				description: [
+					version === newest ? (/-/.test(version) ? vscode.l10n.t("newest") : vscode.l10n.t("newest stable")) : undefined,
+					local.has(version.toLowerCase()) || local.has(version) ? vscode.l10n.t("in the local cache") : undefined,
+				].filter(Boolean).join(" · "),
+				version,
+				picked: version === (preferred ?? newest),
+			}));
+		if (!loaded) {
+			items.push({
+				label: `$(cloud) ${vscode.l10n.t("Load every version from the package sources")}`,
+				detail: vscode.l10n.t("Runs dotnet package search --exact-match."),
+				loadMore: true,
+			});
+		}
+		const picked = await vscode.window.showQuickPick(items, {
+			title: vscode.l10n.t("Version of {0}", hit.id),
+			placeHolder: vscode.l10n.t("Pick the version to add"),
+		});
+		if (!picked) {
+			return undefined;
+		}
+		if (picked.version) {
+			return picked.version;
+		}
+		try {
+			const found = await vscode.window.withProgress(
+				{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
+				async (progress) => {
+					progress.report({ message: vscode.l10n.t("Reading the versions of {0}...", hit.id) });
+					return dotnetCli.packageVersions(cwd, hit.id, prerelease);
+				}
+			);
+			versions = sortVersionsDescending([...versions, ...found]);
+		} catch (error) {
+			showFailure(vscode.l10n.t("Could not read the versions"), error);
+		}
+		loaded = true;
+	}
+}
+
+async function pickProjectsForAdd(packageId: string): Promise<vscode.Uri[] | undefined> {
+	const projects = await workspaceScanner.findProjects();
+	if (projects.length === 0) {
+		vscode.window.showErrorMessage(vscode.l10n.t("No .csproj, .fsproj or .vbproj file was found in the workspace."));
+		return undefined;
+	}
+	const editor = vscode.window.activeTextEditor;
+	const active = editor && isMsBuildProject(editor.document.fileName) ? pathKey(editor.document.uri.fsPath) : undefined;
+	const referenced = new Map(packageProjects(packageId)
+		.filter((item) => item.relation === "direct")
+		.map((item) => [item.name.toLowerCase(), item.version]));
+	if (projects.length === 1) {
+		return projects;
+	}
+	const picked = await vscode.window.showQuickPick(
+		projects
+			.map((project) => {
+				const name = workspaceScanner.getProjectName(project);
+				const has = referenced.get(name.toLowerCase());
+				return {
+					label: name,
+					description: has !== undefined
+						? vscode.l10n.t("already references {0} {1}", packageId, has ?? "")
+						: vscode.workspace.asRelativePath(project),
+					picked: active !== undefined && pathKey(project.fsPath) === active,
+					project,
+				};
+			})
+			.sort((left, right) => left.label.localeCompare(right.label)),
+		{
+			title: vscode.l10n.t("Add {0} to", packageId),
+			placeHolder: vscode.l10n.t("Pick one or more projects"),
+			canPickMany: true,
+		}
+	);
+	if (!picked || picked.length === 0) {
+		return undefined;
+	}
+	return picked.map((item) => item.project);
+}
+
+/**
+ * Adds a package to one or more projects with `dotnet add package`. With
+ * Central Package Management, dotnet writes PackageVersion to
+ * Directory.Packages.props and a version-less PackageReference to the project.
+ */
+async function addPackage(args?: { packageId?: unknown; version?: unknown; query?: unknown }): Promise<void> {
+	let hit: SearchHit | undefined;
+	const requestedId = isValidPackageId(args?.packageId) ? args.packageId : undefined;
+	const requestedVersion = isValidPackageVersion(args?.version) ? args.version : undefined;
+	if (requestedId) {
+		const local = (await searchLocalPackages(await packagesRoot(), requestedId, 10))
+			.find((item) => item.id.toLowerCase() === requestedId.toLowerCase());
+		hit = local ?? { id: requestedId, versions: requestedVersion ? [requestedVersion] : [], source: "feed" };
+		if (requestedVersion && !hit.versions.includes(requestedVersion)) {
+			hit = { ...hit, versions: sortVersionsDescending([...hit.versions, requestedVersion]) };
+		}
+	} else {
+		const picked = await pickPackageToAdd(typeof args?.query === "string" && isValidSearchQuery(args.query) ? args.query : "");
+		hit = picked?.hit;
+	}
+	if (!hit) {
+		return;
+	}
+
+	const projects = await pickProjectsForAdd(hit.id);
+	if (!projects) {
+		return;
+	}
+	const version = requestedVersion ?? await pickVersionToAdd(hit);
+	if (!version) {
+		return;
+	}
+	if (!isValidPackageId(hit.id) || !isValidPackageVersion(version)) {
+		vscode.window.showWarningMessage(vscode.l10n.t("That is not a valid package id or version. Nothing was added."));
+		return;
+	}
+
+	const names = projects.map((project) => workspaceScanner.getProjectName(project));
+	const already = packageProjects(hit.id).filter((item) => item.relation === "direct" && names.some((name) => name.toLowerCase() === item.name.toLowerCase()));
+	const details = await updateDetailsLines(hit.id, [], version);
+	const lines = [
+		vscode.l10n.t("Projects: {0}", names.join(", ")),
+		ScanState.getCpm()
+			? vscode.l10n.t("Central Package Management is on. dotnet writes PackageVersion to Directory.Packages.props and a PackageReference without a version to each project.")
+			: vscode.l10n.t("dotnet add package writes a PackageReference to each project."),
+		...(already.length > 0 ? [vscode.l10n.t("Already referenced in {0}. The version there changes to {1}.", already.map((item) => `${item.name} ${item.version ?? ""}`.trim()).join(", "), version)] : []),
+		...(rollbackEnabled() && projects.length > 1 ? [vscode.l10n.t("If one project fails, every file is put back as it was.")] : []),
+		"",
+		...details,
+	];
+	const yes = vscode.l10n.t("Yes, Add");
+	const confirm = await vscode.window.showWarningMessage(
+		vscode.l10n.t("Add {0} {1}?", hit.id, version),
+		{ modal: true, detail: lines.join("\n") },
+		yes
+	);
+	if (confirm !== yes) {
+		return;
+	}
+
+	const packageId = hit.id;
+	await writeQueue.run(async () => vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
+		async (progress) => {
+			const label = vscode.l10n.t("Add {0} {1}", packageId, version);
+			const targets: WriteTarget[] = projects.map((project) => ({
+				packageId,
+				version,
+				projectPath: project.fsPath,
+				projectName: workspaceScanner.getProjectName(project),
+			}));
+			const useRollback = rollbackEnabled() && targets.length > 1;
+			const snapshot = new FileSnapshot();
+			if (useRollback) {
+				await snapshot.capture(await filesTouchedBy(targets));
+			}
+			const failed: string[] = [];
+			let added = 0;
+			for (const target of targets) {
+				progress.report({ message: `${packageId} ${version} → ${target.projectName}` });
+				try {
+					await dotnetCli.updatePackage(target.projectPath, packageId, version);
+					added += 1;
+				} catch (error) {
+					failed.push(`${target.projectName}: ${errorText(error)}`);
+					if (useRollback) {
+						break;
+					}
+				}
+			}
+			forgetEvaluations();
+			let rolledBack: WriteResult["rolledBack"];
+			if (failed.length > 0 && useRollback && added > 0) {
+				const result = await snapshot.restore();
+				rolledBack = { restored: result.restored.length, notRestored: result.failed };
+				added = 0;
+			}
+			if (added > 0 || rolledBack) {
+				try {
+					await restoreForProjects(targets.map((target) => target.projectPath));
+				} catch (error) {
+					failed.push(errorText(error));
+				}
+			}
+			logger.info(`${label}: ${added} of ${targets.length} projects.`);
+			if (failed.length === 0) {
+				void vscode.window.showInformationMessage(targets.length === 1
+					? vscode.l10n.t("{0} {1} was added to {2}.", packageId, version, targets[0].projectName)
+					: vscode.l10n.t("{0} {1} was added to {2} projects.", packageId, version, added));
+			} else {
+				reportWriteResult(label, added, targets.length, failed, rolledBack);
+			}
+			await vscode.commands.executeCommand("packageHub.scanWorkspace");
+		}
+	));
+}
+
+/**
+ * Searches for the dashboard's Add package tab. Local cache first; the
+ * package sources only when the page asks for them.
+ */
+export async function searchForDashboard(query: string, online: boolean): Promise<{ hits: SearchHit[]; problems: string[]; error?: string }> {
+	const local = await searchLocalPackages(await packagesRoot(), query, 25);
+	if (!online) {
+		return { hits: local, problems: [] };
+	}
+	try {
+		const cwd = workspaceScanner.getWorkspaceRoot() || process.cwd();
+		const feed = await dotnetCli.searchPackages(cwd, query, ScanState.includePrerelease(), 25);
+		return { hits: mergeHits(local, feed.hits), problems: feed.problems };
+	} catch (error) {
+		return { hits: local, problems: [], error: errorText(error) };
+	}
+}
+
+// ======================
+// Align versions
+// ======================
+
+function alignLines(plan: AlignPlan): string[] {
+	return [
+		...plan.moves.map((move) => `${move.projectName}: ${move.from} → ${plan.target}`),
+		...(plan.aligned.length > 0 ? [vscode.l10n.t("Already at {0}: {1}.", plan.target, plan.aligned.join(", "))] : []),
+	];
+}
+
+/**
+ * Brings one package to the same version in every project that references
+ * it directly, inside each major version.
+ */
+async function alignVersions(args?: unknown): Promise<void> {
+	let packageId = typeof args === "string"
+		? args
+		: args && typeof args === "object" && typeof (args as { packageId?: unknown }).packageId === "string"
+			? (args as { packageId: string }).packageId
+			: undefined;
+	const entries = ScanState.allEntries();
+	if (!packageId) {
+		const ids = alignablePackages(entries);
+		if (ids.length === 0) {
+			vscode.window.showInformationMessage(ScanState.getScannedAt()
+				? vscode.l10n.t("No package needs aligning. Every direct reference already uses one version per major version.")
+				: vscode.l10n.t("Scan first"));
+			return;
+		}
+		packageId = await vscode.window.showQuickPick(ids, { placeHolder: vscode.l10n.t("Select the package to align") });
+		if (!packageId) {
+			return;
+		}
+	}
+	if (!isValidPackageId(packageId)) {
+		vscode.window.showWarningMessage(vscode.l10n.t("That is not a valid package id."));
+		return;
+	}
+
+	let plans = planAlignment(packageId, entries);
+	if (plans.length === 0) {
+		vscode.window.showInformationMessage(vscode.l10n.t("{0} has nothing to align. Different versions per target framework and different major versions are kept.", packageId));
+		return;
+	}
+	if (plans.length > 1) {
+		const picked = await vscode.window.showQuickPick(
+			plans.map((plan) => ({
+				label: vscode.l10n.t("{0}.x → {1}", plan.major, plan.target),
+				detail: plan.moves.map((move) => `${move.projectName} ${move.from}`).join(", "),
+				picked: true,
+				plan,
+			})),
+			{ canPickMany: true, placeHolder: vscode.l10n.t("{0} is used in more than one major version. Each major version is aligned on its own.", packageId) }
+		);
+		if (!picked || picked.length === 0) {
+			return;
+		}
+		plans = picked.map((item) => item.plan);
+	}
+
+	const kept = plans[0].kept;
+	const details: string[] = [];
+	for (const plan of plans) {
+		details.push(...await updateDetailsLines(packageId, plan.moves.map((move) => move.from), plan.target));
+	}
+	const lines = [
+		...plans.flatMap(alignLines),
+		...(kept.length > 0 ? [vscode.l10n.t("Kept: {0}.", kept.map((item) => `${item.projectName} (${item.reason})`).join(", "))] : []),
+		vscode.l10n.t("Nothing crosses a major version and nothing is downgraded."),
+		...(rollbackEnabled() ? [vscode.l10n.t("If one project fails, every file is put back as it was.")] : []),
+		...(details.length > 0 ? ["", ...details] : []),
+	];
+	const yes = vscode.l10n.t("Yes, Align");
+	const confirm = await vscode.window.showWarningMessage(
+		vscode.l10n.t("Align {0}?", packageId),
+		{ modal: true, detail: lines.join("\n") },
+		yes
+	);
+	if (confirm !== yes) {
+		return;
+	}
+
+	const id = packageId;
+	const targets: WriteTarget[] = plans.flatMap((plan) => plan.moves.map((move) => ({
+		packageId: id,
+		version: plan.target,
+		projectPath: move.projectPath,
+		projectName: move.projectName,
+	})));
+	await writeQueue.run(async () => vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
+		async (progress) => {
+			const label = vscode.l10n.t("Align {0}", id);
+			const { written, failed, rolledBack } = await writeTargets(label, targets, progress, { rollback: true });
+			reportWriteResult(label, written.length, targets.length, failed, rolledBack);
+			if (written.length > 0 || rolledBack) {
+				await vscode.commands.executeCommand("packageHub.scanWorkspace");
+			}
+		}
+	));
+}
+
+// ======================
+// Unused central versions
+// ======================
+
+async function removeUnusedCentralVersions(): Promise<void> {
+	const propsUris = await workspaceScanner.findCentralPackageManagementFiles();
+	if (propsUris.length === 0) {
+		vscode.window.showInformationMessage(vscode.l10n.t("No Directory.Packages.props was found. Central Package Management is not used here."));
+		return;
+	}
+	const projects = await workspaceScanner.findProjects();
+	const evaluated: ProjectEvaluation[] = [];
+	const failedProjects: string[] = [];
+	await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
+		async (progress) => {
+			for (const project of projects) {
+				progress.report({ message: vscode.l10n.t("Reading {0}", workspaceScanner.getProjectName(project)) });
+				try {
+					evaluated.push(await evaluationFor(project.fsPath));
+				} catch (error) {
+					failedProjects.push(workspaceScanner.getProjectName(project));
+					logger.error(`Could not evaluate ${project.fsPath}: ${errorText(error)}`);
+				}
+			}
+		}
+	);
+	if (failedProjects.length > 0) {
+		vscode.window.showWarningMessage(vscode.l10n.t("Could not read {0}. Nothing was removed, because an unread project may use these versions.", failedProjects.join(", ")));
+		return;
+	}
+	const files: { filePath: string; text: string }[] = [];
+	for (const uri of propsUris) {
+		const text = await readText(uri.fsPath);
+		if (text !== undefined) {
+			files.push({ filePath: uri.fsPath, text });
+		}
+	}
+	const unused = findUnusedCentralVersions(files, evaluated);
+	if (unused.length === 0) {
+		vscode.window.showInformationMessage(vscode.l10n.t("Every PackageVersion in Directory.Packages.props is used by a project."));
+		return;
+	}
+	const picked = await vscode.window.showQuickPick(
+		unused.map((item) => ({
+			label: item.id,
+			description: item.version ?? "",
+			detail: `${vscode.workspace.asRelativePath(item.filePath)}:${item.line + 1}`,
+			picked: true,
+			item,
+		})),
+		{
+			canPickMany: true,
+			title: vscode.l10n.t("Unused PackageVersion entries"),
+			placeHolder: vscode.l10n.t("No project in this workspace references these. Pick the ones to remove."),
+		}
+	);
+	if (!picked || picked.length === 0) {
+		return;
+	}
+	const byFile = new Map<string, string[]>();
+	for (const { item } of picked) {
+		const list = byFile.get(item.filePath) ?? [];
+		list.push(item.id);
+		byFile.set(item.filePath, list);
+	}
+	const yes = vscode.l10n.t("Yes, Remove");
+	const confirm = await vscode.window.showWarningMessage(
+		picked.length === 1
+			? vscode.l10n.t("Remove 1 unused PackageVersion?")
+			: vscode.l10n.t("Remove {0} unused PackageVersion entries?", picked.length),
+		{
+			modal: true,
+			detail: [
+				picked.map(({ item }) => `${item.id} ${item.version ?? ""}`.trim()).join("\n"),
+				vscode.l10n.t("Edits {0}.", [...byFile.keys()].map((file) => vscode.workspace.asRelativePath(file)).join(", ")),
+				vscode.l10n.t("Only projects in this workspace were checked. A project outside it that imports the same file may still need them."),
+			].join("\n\n"),
+		},
+		yes
+	);
+	if (confirm !== yes) {
+		return;
+	}
+	await writeQueue.run(async () => {
+		const failed: string[] = [];
+		for (const [filePath, ids] of byFile) {
+			try {
+				await rewriteFile(filePath, (text) => removePackageVersionsFromXml(text, ids), vscode.l10n.t("{0} could not be written.", path.basename(filePath)));
+			} catch (error) {
+				failed.push(`${path.basename(filePath)}: ${errorText(error)}`);
+			}
+		}
+		forgetEvaluations();
+		if (failed.length > 0) {
+			showFailure(vscode.l10n.t("Could not remove the unused versions"), failed.join("\n"));
+			return;
+		}
+		void vscode.window.showInformationMessage(picked.length === 1
+			? vscode.l10n.t("Removed 1 unused PackageVersion.")
+			: vscode.l10n.t("Removed {0} unused PackageVersion entries.", picked.length));
+		try {
+			await restoreForProjects(projects.map((project) => project.fsPath));
+		} catch (error) {
+			logger.error(`Restore after removing unused versions failed: ${errorText(error)}`);
+		}
+	});
+	await vscode.commands.executeCommand("packageHub.scanWorkspace");
 }
 
 function paintScanStatus(item: vscode.StatusBarItem): void {
@@ -737,7 +1667,7 @@ export function activate(context: vscode.ExtensionContext) {
 		codeLensProvider,
 		lineDecorations,
 		vscode.languages.registerCodeLensProvider(
-			{ scheme: "file", pattern: "**/*.{csproj,fsproj,props}" },
+			{ scheme: "file", pattern: PACKAGE_DOCUMENT_GLOB },
 			codeLensProvider
 		)
 	);
@@ -769,6 +1699,10 @@ export function activate(context: vscode.ExtensionContext) {
 		if (event.affectsConfiguration("packageHub.onlineLookups")) {
 			HealthDashboardPanel.refreshIfOpen();
 		}
+
+		if (event.affectsConfiguration("packageHub.badge")) {
+			treeProvider.refresh();
+		}
 	}));
 
 	void refreshCentralPackages(workspaceScanner)
@@ -798,7 +1732,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// The hover explains. Update links read the lightbulb cache and do not start a new dotnet call.
 	const hoverProvider = vscode.languages.registerHoverProvider(
 		[
-			{ scheme: "file", pattern: "**/*.{csproj,fsproj,props}" }
+			{ scheme: "file", pattern: PACKAGE_DOCUMENT_GLOB }
 		],
 		new PackageHoverProvider(codeActionProvider, workspaceScanner)
 	);
@@ -806,14 +1740,14 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		auditDiagnostics,
 		vscode.languages.registerCodeActionsProvider(
-			{ scheme: "file", pattern: "**/*.{csproj,fsproj,props}" },
+			{ scheme: "file", pattern: PACKAGE_DOCUMENT_GLOB },
 			codeActionProvider,
 			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 		)
 	);
 
 	// A new or deleted project file changes what the Package Health view shows.
-	const projectWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,sln}", false, true, false);
+	const projectWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,vbproj,sln,slnx}", false, true, false);
 	// Clear the project cache first so the view does not read a stale list.
 	const projectsChanged = () => {
 		workspaceScanner.invalidate();
@@ -821,6 +1755,10 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 	projectWatcher.onDidCreate(projectsChanged);
 	projectWatcher.onDidDelete(projectsChanged);
+	// Editing a solution changes which projects it holds.
+	const solutionWatcher = vscode.workspace.createFileSystemWatcher("**/*.{sln,slnx}", true, false, true);
+	solutionWatcher.onDidChange(projectsChanged);
+	context.subscriptions.push(solutionWatcher);
 	context.subscriptions.push(
 		projectWatcher,
 		// Adding or removing a workspace folder changes what can be scanned without creating a file.
@@ -853,7 +1791,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const editor = vscode.window.activeTextEditor;
 		const ref = activeLineRef();
 		if (!editor || !ref) {
-			vscode.window.showWarningMessage("No package was found on this line.");
+			vscode.window.showWarningMessage(vscode.l10n.t("No package was found on this line."));
 			return;
 		}
 
@@ -869,7 +1807,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const peek = await codeActionProvider.peekUpdateTargets(editor.document, ref.id, current);
 		if (!peek.ready) {
 			vscode.window.showInformationMessage(
-				"The patch list is not ready yet. The update was not started."
+				vscode.l10n.t("The patch list is not ready yet. The update was not started.")
 			);
 			return;
 		}
@@ -877,7 +1815,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const version = channel === "patch" ? peek.patch : peek.latest;
 		if (!version) {
 			vscode.window.showWarningMessage(
-				`No ${channel} version for ${ref.id}. The update was not started.`
+				vscode.l10n.t("No {0} version for {1}. The update was not started.", channel, ref.id)
 			);
 			return;
 		}
@@ -904,7 +1842,7 @@ export function activate(context: vscode.ExtensionContext) {
 				if (fromLine) {
 					packageId = fromLine;
 				} else if (inProjectFile) {
-					vscode.window.showWarningMessage("No package was found on this line.");
+					vscode.window.showWarningMessage(vscode.l10n.t("No package was found on this line."));
 					return;
 				}
 			}
@@ -919,13 +1857,13 @@ export function activate(context: vscode.ExtensionContext) {
 				const uniqueIds = [...new Set(all.map((p) => p.id))];
 				if (uniqueIds.length === 0) {
 					vscode.window.showWarningMessage(
-						"No package to ignore. Run Scan Workspace first."
+						vscode.l10n.t("No package to ignore. Run Scan Workspace first.")
 					);
 					return;
 				}
 
 				const picked = await vscode.window.showQuickPick(uniqueIds, {
-					placeHolder: "Select the package to ignore",
+					placeHolder: vscode.l10n.t("Select the package to ignore"),
 				});
 
 				if (!picked) {
@@ -936,7 +1874,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!isValidPackageId(packageId)) {
-				vscode.window.showWarningMessage("That is not a valid package id.");
+				vscode.window.showWarningMessage(vscode.l10n.t("That is not a valid package id."));
 				return;
 			}
 
@@ -944,24 +1882,26 @@ export function activate(context: vscode.ExtensionContext) {
 			const choice = await vscode.window.showQuickPick(
 				[
 					{
-						label: "Hide in PackageHub",
-						description: "List",
-						detail: "The build warning stays",
+						label: vscode.l10n.t("Hide in PackageHub"),
+						description: vscode.l10n.t("List"),
+						detail: vscode.l10n.t("The build warning stays"),
+						suppress: false,
 					},
 					{
-						label: "Suppress this advisory",
-						description: url ? "NuGetAuditSuppress" : "Off",
-						detail: url || "No advisory URL",
+						label: vscode.l10n.t("Suppress this advisory"),
+						description: url ? "NuGetAuditSuppress" : vscode.l10n.t("Off"),
+						detail: url || vscode.l10n.t("No advisory URL"),
+						suppress: true,
 					},
 				],
-				{ placeHolder: `Ignore for ${packageId}` }
+				{ placeHolder: vscode.l10n.t("Ignore for {0}", packageId) }
 			);
 			if (!choice) {
 				return;
 			}
-			if (choice.label === "Suppress this advisory") {
+			if (choice.suppress) {
 				if (!url) {
-					vscode.window.showWarningMessage("No advisory URL. Suppress is unavailable.");
+					vscode.window.showWarningMessage(vscode.l10n.t("No advisory URL. Suppress is unavailable."));
 					return;
 				}
 				await openSuppressDiff(packageId, url);
@@ -973,14 +1913,14 @@ export function activate(context: vscode.ExtensionContext) {
 			const id = packageId;
 
 			if (current.some((item) => item.toLowerCase() === id.toLowerCase())) {
-				vscode.window.showInformationMessage(`${id} is already in the ignore list.`);
+				vscode.window.showInformationMessage(vscode.l10n.t("{0} is already in the ignore list.", id));
 				return;
 			}
 
 			await config.update("ignoredPackages", [...current, id], vscode.ConfigurationTarget.Workspace);
 
 			vscode.window.showInformationMessage(
-				`${id} is hidden from PackageHub lists. The build warning stays.`
+				vscode.l10n.t("{0} is hidden from PackageHub lists. The build warning stays.", id)
 			);
 			await vscode.commands.executeCommand("packageHub.scanWorkspace");
 		}
@@ -993,12 +1933,12 @@ export function activate(context: vscode.ExtensionContext) {
 			const current = config.get<string[]>("ignoredPackages") || [];
 
 			if (current.length === 0) {
-				vscode.window.showInformationMessage("The ignore list is empty.");
+				vscode.window.showInformationMessage(vscode.l10n.t("The ignore list is empty."));
 				return;
 			}
 
 			const picked = await vscode.window.showQuickPick(current, {
-				placeHolder: "Select the package to unignore",
+				placeHolder: vscode.l10n.t("Select the package to unignore"),
 			});
 
 			if (!picked) {
@@ -1011,7 +1951,7 @@ export function activate(context: vscode.ExtensionContext) {
 				vscode.ConfigurationTarget.Workspace
 			);
 
-			vscode.window.showInformationMessage(`${picked} was removed from the ignore list.`);
+			vscode.window.showInformationMessage(vscode.l10n.t("{0} was removed from the ignore list.", picked));
 			await vscode.commands.executeCommand("packageHub.scanWorkspace");
 		}
 	);
@@ -1022,14 +1962,14 @@ export function activate(context: vscode.ExtensionContext) {
 			try {
 				const editor = vscode.window.activeTextEditor;
 				if (!editor) {
-					vscode.window.showWarningMessage("No editor is open.");
+					vscode.window.showWarningMessage(vscode.l10n.t("No editor is open."));
 					return;
 				}
 
 				const ref = activeLineRef();
 				if (!ref) {
 					vscode.window.showWarningMessage(
-						"No PackageReference was found on this line."
+						vscode.l10n.t("No PackageReference was found on this line.")
 					);
 					return;
 				}
@@ -1040,29 +1980,31 @@ export function activate(context: vscode.ExtensionContext) {
 
 				if (!info) {
 					vscode.window.showInformationMessage(
-						`${packageId} has no known issue in the last scan (or no scan has run yet).`
+						vscode.l10n.t("{0} has no known issue in the last scan (or no scan has run yet).", packageId)
 					);
 					return;
 				}
 
 				const lines = [
 					`${packageId}`,
-					info.version ? `Current: ${info.version}` : undefined,
-					info.latestVersion ? `Suggested: ${info.latestVersion}` : undefined,
-					info.severity ? `Severity: ${info.severity}` : undefined,
-					vulnerable ? "Status: Vulnerable" : undefined,
-					!vulnerable && deprecated ? "Status: Deprecated" : undefined,
-					!vulnerable && !deprecated && outdated ? "Status: Outdated" : undefined,
-					info.projects?.length ? `Projects: ${info.projects.join(", ")}` : undefined,
+					info.version ? vscode.l10n.t("Current: {0}", info.version) : undefined,
+					info.latestVersion ? vscode.l10n.t("Suggested: {0}", info.latestVersion) : undefined,
+					info.severity ? vscode.l10n.t("Severity: {0}", info.severity) : undefined,
+					vulnerable ? vscode.l10n.t("Status: Vulnerable") : undefined,
+					!vulnerable && deprecated ? vscode.l10n.t("Status: Deprecated") : undefined,
+					!vulnerable && !deprecated && outdated ? vscode.l10n.t("Status: Outdated") : undefined,
+					info.projects?.length ? vscode.l10n.t("Projects: {0}", info.projects.join(", ")) : undefined,
 				].filter(Boolean);
 
+				const openAdvisory = vscode.l10n.t("Open Advisory");
+				const updateButton = vscode.l10n.t("Update");
 				const buttons: string[] = [];
 				const advisory = info.advisoryUrl?.startsWith("https://") ? info.advisoryUrl : undefined;
 				if (advisory) {
-					buttons.push("Open Advisory");
+					buttons.push(openAdvisory);
 				}
 				if (info.latestVersion) {
-					buttons.push("Update");
+					buttons.push(updateButton);
 				}
 
 				const action = await vscode.window.showInformationMessage(
@@ -1070,11 +2012,11 @@ export function activate(context: vscode.ExtensionContext) {
 					...buttons
 				);
 
-				if (action === "Open Advisory" && advisory) {
+				if (action === openAdvisory && advisory) {
 					await vscode.env.openExternal(vscode.Uri.parse(advisory));
 				}
 
-				if (action === "Update") {
+				if (action === updateButton) {
 					await vscode.commands.executeCommand("packageHub.updateVulnerable", {
 						packageId: info.id,
 						version: info.latestVersion,
@@ -1082,7 +2024,7 @@ export function activate(context: vscode.ExtensionContext) {
 				}
 			} catch (error: any) {
 				logger.error(`Could not explain the package: ${error?.message || error}`);
-				vscode.window.showErrorMessage("Could not explain the package.");
+				vscode.window.showErrorMessage(vscode.l10n.t("Could not explain the package."));
 			}
 		}
 	);
@@ -1092,7 +2034,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 		if (!workspaceRoot) {
 			vscode.window.showErrorMessage(
-				"No workspace is open. Open a folder."
+				vscode.l10n.t("No workspace is open. Open a folder.")
 			);
 			return;
 		}
@@ -1104,7 +2046,7 @@ export function activate(context: vscode.ExtensionContext) {
 				cancellable: true,
 			},
 			async (progress, token) => {
-				progress.report({ message: "Scanning packages..." });
+				progress.report({ message: vscode.l10n.t("Scanning packages...") });
 
 				const abort = new AbortController();
 				const cancelSub = token.onCancellationRequested(() => abort.abort());
@@ -1174,11 +2116,10 @@ export function activate(context: vscode.ExtensionContext) {
 						});
 					};
 
+					// .sln and .slnx are both scanned as one target. When dotnet cannot read a
+					// solution (for example a .slnx on an older SDK), its projects are scanned one by one.
 					const foundSolutions = (await workspaceScanner.findSolutions()).map((item) => item.fsPath);
-					for (const slnx of slnxPaths(foundSolutions)) {
-						logger.info(`.slnx is not scanned as one target. Its projects are scanned one by one: ${slnx}`);
-					}
-					const solutionMembership = await readSolutionProjects(classicSolutionPaths(foundSolutions));
+					const solutionMembership = await readSolutionProjects(foundSolutions);
 					const allProjects = (await workspaceScanner.findProjects()).map((project) => project.fsPath);
 					const plan = planScanTargets(solutionMembership, allProjects);
 					for (const solution of plan.skippedSolutions) {
@@ -1196,7 +2137,7 @@ export function activate(context: vscode.ExtensionContext) {
 						paintScanStatus(statusBarItem);
 						treeProvider.refresh();
 						vscode.window.showErrorMessage(
-							"No .sln, .csproj, or .fsproj file was found in the workspace."
+							vscode.l10n.t("No .sln, .slnx, .csproj, .fsproj or .vbproj file was found in the workspace.")
 						);
 						return;
 					}
@@ -1248,15 +2189,17 @@ export function activate(context: vscode.ExtensionContext) {
 
 					if (skipped.length > 0) {
 						const names = skipped.slice(0, 3).map((item) => projectNameFromPath(item));
-						const extra = skipped.length > 3 ? ` and ${skipped.length - 3} more` : "";
+						const extra = skipped.length > 3 ? ` ${vscode.l10n.t("and {0} more", skipped.length - 3)}` : "";
 						vscode.window.showWarningMessage(
-							`PackageHub skipped ${skipped.length} project${skipped.length === 1 ? "" : "s"} that dotnet could not load: ${names.join(", ")}${extra}. The other projects were scanned.`
+							skipped.length === 1
+								? vscode.l10n.t("PackageHub skipped 1 project that dotnet could not load: {0}. The other projects were scanned.", `${names.join(", ")}${extra}`)
+								: vscode.l10n.t("PackageHub skipped {0} projects that dotnet could not load: {1}. The other projects were scanned.", skipped.length, `${names.join(", ")}${extra}`)
 						);
 					}
 					if (unreadable.length > 0) {
 						const names = unreadable.slice(0, 3).map((item) => projectNameFromPath(item));
 						vscode.window.showWarningMessage(
-							`dotnet could not read ${names.join(", ")}${unreadable.length > 3 ? ` and ${unreadable.length - 3} more` : ""}. Those projects are not marked healthy. Run Restore All and see the Output panel.`
+							vscode.l10n.t("dotnet could not read {0}. Those projects are not marked healthy. Run Restore All and see the Output panel.", `${names.join(", ")}${unreadable.length > 3 ? ` ${vscode.l10n.t("and {0} more", unreadable.length - 3)}` : ""}`)
 						);
 					}
 
@@ -1354,7 +2297,7 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 
 					const message = `Scan finished → Vulnerable: ${vulnerable.length}, Outdated: ${outdated.length}, Deprecated: ${deprecated.length}`;
-					vscode.window.showInformationMessage(message);
+					vscode.window.showInformationMessage(vscode.l10n.t("Scan finished → Vulnerable: {0}, Outdated: {1}, Deprecated: {2}", vulnerable.length, outdated.length, deprecated.length));
 					logger.info(message);
 					void vscode.commands.executeCommand("setContext", "packageHub.scanCompleted", true);
 
@@ -1399,7 +2342,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const errorMessage = error.message || String(error);
 					logger.error(`Scan error: ${errorMessage}`);
 					vscode.window.showErrorMessage(
-						`PackageHub scan error: ${errorMessage}`
+						vscode.l10n.t("PackageHub scan error: {0}", errorMessage)
 					);
 				} finally {
 					cancelSub.dispose();
@@ -1412,20 +2355,33 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.scanWorkspace",
 		async () => {
 			if (!scanGate.begin()) {
+				// The running scan goes once more when it finishes. Wait for
+				// that, so a caller that awaits the command sees fresh data.
 				logger.info("A scan is already running. It will run once more when it finishes.");
+				await runningScan?.catch(() => undefined);
 				return;
 			}
-			HealthDashboardPanel.setScanning(true);
+			const scan = (async () => {
+				HealthDashboardPanel.setScanning(true);
+				try {
+					do {
+						await performWorkspaceScan();
+					} while (scanGate.end());
+				} catch (error) {
+					scanGate.forceIdle();
+					throw error;
+				} finally {
+					HealthDashboardPanel.setScanning(false);
+					HealthDashboardPanel.refreshIfOpen();
+				}
+			})();
+			runningScan = scan;
 			try {
-				do {
-					await performWorkspaceScan();
-				} while (scanGate.end());
-			} catch (error) {
-				scanGate.forceIdle();
-				throw error;
+				await scan;
 			} finally {
-				HealthDashboardPanel.setScanning(false);
-				HealthDashboardPanel.refreshIfOpen();
+				if (runningScan === scan) {
+					runningScan = undefined;
+				}
 			}
 		}
 	);
@@ -1435,12 +2391,12 @@ export function activate(context: vscode.ExtensionContext) {
 		async (args?: { packageId?: unknown; version?: unknown; projectName?: unknown; projects?: unknown }) => {
 			const packageId = args?.packageId;
 			if (!isValidPackageId(packageId)) {
-				vscode.window.showWarningMessage("The package update details are missing or invalid.");
+				vscode.window.showWarningMessage(vscode.l10n.t("The package update details are missing or invalid."));
 				return;
 			}
 			const version = typeof args?.version === "string" && args.version ? args.version : undefined;
 			if (version !== undefined && !isValidPackageVersion(version)) {
-				vscode.window.showWarningMessage(`"${version}" is not an exact NuGet version. The update was not started.`);
+				vscode.window.showWarningMessage(vscode.l10n.t("\"{0}\" is not an exact NuGet version. The update was not started.", version));
 				return;
 			}
 			const projectName = typeof args?.projectName === "string" ? args.projectName : undefined;
@@ -1472,30 +2428,31 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (targets.length === 0 && newerProjects.length > 0) {
 				vscode.window.showInformationMessage(
-					`${packageId} is already at ${version} or newer in ${newerProjects.map((item) => item.name).join(", ")}. Nothing was updated.`
+					vscode.l10n.t("{0} is already at {1} or newer in {2}. Nothing was updated.", packageId, version ?? "", newerProjects.map((item) => item.name).join(", "))
 				);
 				return;
 			}
 
 			if (targets.length === 0) {
 				vscode.window.showWarningMessage(
-					`No project was matched for ${packageId}. Nothing was updated, and no restore was run.`
+					vscode.l10n.t("No project was matched for {0}. Nothing was updated, and no restore was run.", packageId)
 				);
 				logger.error(`Update cancelled: no matching project → ${packageId}`);
 				return;
 			}
 
 			if (!version) {
+				const tryAnyway = vscode.l10n.t("Try anyway");
 				const cont = await vscode.window.showWarningMessage(
-					`No newer version was suggested for ${packageId}.`,
+					vscode.l10n.t("No newer version was suggested for {0}.", packageId),
 					{
 						modal: true,
-						detail: `A newer version may not exist under the same package id (for example xunit → xunit.v3).\nRun "dotnet add package ${packageId}" anyway?`,
+						detail: vscode.l10n.t("A newer version may not exist under the same package id (for example xunit → xunit.v3).\nRun \"dotnet add package {0}\" anyway?", packageId),
 					},
-					"Try anyway"
+					tryAnyway
 				);
 
-				if (cont !== "Try anyway") {
+				if (cont !== tryAnyway) {
 					return;
 				}
 			}
@@ -1532,31 +2489,44 @@ export function activate(context: vscode.ExtensionContext) {
 				youngerThanAgeGate: version ? !latestReleasePreferred(packageId, version) : false,
 			});
 			if (newerProjects.length > 0) {
-				summary.lines.push(`Left as is, already newer than ${version}: ${newerProjects.map((item) => `${item.name} ${item.from}`).join(", ")}.`);
+				summary.lines.push(vscode.l10n.t("Left as is, already newer than {0}: {1}.", version ?? "", newerProjects.map((item) => `${item.name} ${item.from}`).join(", ")));
+			}
+			if (version) {
+				const details = await updateDetailsLines(packageId, summaryProjects.map((item) => item.fromVersion), version);
+				if (details.length > 0) {
+					summary.lines.push("", ...details);
+				}
 			}
 
+			const yesUpdate = vscode.l10n.t("Yes, Update");
 			const confirm = await vscode.window.showWarningMessage(
 				summary.heading,
 				{ modal: true, detail: summary.lines.join("\n") },
-				"Yes, Update"
+				yesUpdate
 			);
-			if (confirm !== "Yes, Update") {
+			if (confirm !== yesUpdate) {
 				return;
 			}
 
 			const transitive = targets.filter((target) => target.relation === "transitive");
 			if (transitive.length > 0) {
+				const yesPin = vscode.l10n.t("Yes, Pin");
+				const projectsText = transitive.map((target) => target.name).join(", ");
 				const pin = await vscode.window.showWarningMessage(
-					`Pin transitive ${packageId}?`,
+					vscode.l10n.t("Pin transitive {0}?", packageId),
 					{
 						modal: true,
-						detail: `${packageId} is not referenced directly in ${transitive.map((target) => target.name).join(", ")}. `
-							+ `PackageHub will add a direct PackageReference${version ? ` at ${version}` : ""} there. `
-							+ "That pin stays after the parent package changes, until you remove it.",
+						detail: [
+							vscode.l10n.t("{0} is not referenced directly in {1}.", packageId, projectsText),
+							version
+								? vscode.l10n.t("PackageHub will add a direct PackageReference at {0} there.", version)
+								: vscode.l10n.t("PackageHub will add a direct PackageReference there."),
+							vscode.l10n.t("That pin stays after the parent package changes, until you remove it."),
+						].join(" "),
 					},
-					"Yes, Pin"
+					yesPin
 				);
-				if (pin !== "Yes, Pin") {
+				if (pin !== yesPin) {
 					return;
 				}
 			}
@@ -1574,7 +2544,7 @@ export function activate(context: vscode.ExtensionContext) {
 						const failed: string[] = [];
 						let written = 0;
 						for (const target of writeTargetsList) {
-							progress.report({ message: `${packageId} → latest (${target.projectName})` });
+							progress.report({ message: vscode.l10n.t("{0} → latest ({1})", packageId, target.projectName) });
 							try {
 								await dotnetCli.updatePackage(target.projectPath, packageId);
 								written += 1;
@@ -1597,9 +2567,9 @@ export function activate(context: vscode.ExtensionContext) {
 						return;
 					}
 
-					const { written, failed } = await writeTargets(`${packageId} → ${version}`, writeTargetsList, progress);
+					const { written, failed, rolledBack } = await writeTargets(`${packageId} → ${version}`, writeTargetsList, progress);
 					logger.info(`${packageId} → ${version}: ${written.length} of ${writeTargetsList.length} written.`);
-					reportWriteResult(`${packageId} → ${version}`, written.length, writeTargetsList.length, failed);
+					reportWriteResult(`${packageId} → ${version}`, written.length, writeTargetsList.length, failed, rolledBack);
 					if (written.length > 0) {
 						await vscode.commands.executeCommand("packageHub.scanWorkspace");
 					}
@@ -1632,11 +2602,11 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!packageId) {
-				vscode.window.showWarningMessage("No package was found on this line.");
+				vscode.window.showWarningMessage(vscode.l10n.t("No package was found on this line."));
 				return;
 			}
 			if (!isValidPackageId(packageId)) {
-				vscode.window.showWarningMessage("That is not a valid package id. Removal was not started.");
+				vscode.window.showWarningMessage(vscode.l10n.t("That is not a valid package id. Removal was not started."));
 				return;
 			}
 
@@ -1661,7 +2631,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			if (targets.length === 0) {
 				vscode.window.showErrorMessage(
-					`Could not match a project for ${packageId}. Removal was not started.`
+					vscode.l10n.t("Could not match a project for {0}. Removal was not started.", packageId)
 				);
 				return;
 			}
@@ -1669,12 +2639,13 @@ export function activate(context: vscode.ExtensionContext) {
 			const projectNames = targets
 				.map((project) => workspaceScanner.getProjectName(project))
 				.join("\n");
+			const yesRemove = vscode.l10n.t("Yes, Remove");
 			const confirm = await vscode.window.showWarningMessage(
-				`Remove ${packageId}?`,
+				vscode.l10n.t("Remove {0}?", packageId),
 				{ modal: true, detail: projectNames },
-				"Yes, Remove"
+				yesRemove
 			);
-			if (confirm !== "Yes, Remove") {
+			if (confirm !== yesRemove) {
 				return;
 			}
 
@@ -1685,7 +2656,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const failed: string[] = [];
 					for (const project of targets) {
 						progress.report({
-							message: `${packageId} removing → ${workspaceScanner.getProjectName(project)}`,
+							message: vscode.l10n.t("{0} removing → {1}", packageId, workspaceScanner.getProjectName(project)),
 						});
 						try {
 							await dotnetCli.removePackage(project.fsPath, packageId);
@@ -1697,11 +2668,11 @@ export function activate(context: vscode.ExtensionContext) {
 					forgetEvaluations();
 					logger.info(`Removed ${packageId} from ${removed} of ${targets.length} projects.`);
 					if (failed.length === 0) {
-						vscode.window.showInformationMessage(`${packageId} was removed.`);
+						vscode.window.showInformationMessage(vscode.l10n.t("{0} was removed.", packageId));
 					} else {
 						logger.show(true);
 						vscode.window.showErrorMessage(
-							`Remove failed for ${failed.length} of ${targets.length} projects.`,
+							vscode.l10n.t("Remove failed for {0} of {1} projects.", failed.length, targets.length),
 							{ modal: true, detail: failed.join("\n\n") }
 						);
 					}
@@ -1728,13 +2699,13 @@ export function activate(context: vscode.ExtensionContext) {
 		async () => {
 			const ref = activeLineRef();
 			if (!ref) {
-				vscode.window.showWarningMessage("No package was found on this line.");
+				vscode.window.showWarningMessage(vscode.l10n.t("No package was found on this line."));
 				return;
 			}
 
 			const url = advisorySuppressUrl(ref.id);
 			if (!url) {
-				vscode.window.showWarningMessage("No advisory link for this package.");
+				vscode.window.showWarningMessage(vscode.l10n.t("No advisory link for this package."));
 				return;
 			}
 
@@ -1746,7 +2717,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.updateSelectedPackage",
 		async (item?: any) => {
 			if (!item?.packageId) {
-				vscode.window.showWarningMessage("Could not select a package");
+				vscode.window.showWarningMessage(vscode.l10n.t("Could not select a package"));
 				return;
 			}
 
@@ -1762,7 +2733,7 @@ export function activate(context: vscode.ExtensionContext) {
 		async (args?: { packageId?: string }) => {
 			const packageId = typeof args?.packageId === "string" ? args.packageId.trim() : "";
 			if (!packageId) {
-				vscode.window.showWarningMessage("Could not select a package.");
+				vscode.window.showWarningMessage(vscode.l10n.t("Could not select a package."));
 				return;
 			}
 
@@ -1811,7 +2782,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.showPackageInfo",
 		async (item?: any) => {
 			if (!item?.packageId) {
-				vscode.window.showWarningMessage("Could not select a package.");
+				vscode.window.showWarningMessage(vscode.l10n.t("Could not select a package."));
 				return;
 			}
 
@@ -1820,11 +2791,11 @@ export function activate(context: vscode.ExtensionContext) {
 			const version = info?.version || (typeof item.version === "string" ? item.version : undefined);
 
 			const lines = [
-				`Package: ${item.packageId}`,
-				version ? `Current: ${version}` : undefined,
-				info?.latestVersion ? `Latest version: ${info.latestVersion}` : undefined,
-				info?.severity ? `Severity: ${info.severity}` : undefined,
-				info?.projects?.length ? `Projects: ${info.projects.join(", ")}` : undefined,
+				vscode.l10n.t("Package: {0}", item.packageId),
+				version ? vscode.l10n.t("Current: {0}", version) : undefined,
+				info?.latestVersion ? vscode.l10n.t("Latest version: {0}", info.latestVersion) : undefined,
+				info?.severity ? vscode.l10n.t("Severity: {0}", info.severity) : undefined,
+				info?.projects?.length ? vscode.l10n.t("Projects: {0}", info.projects.join(", ")) : undefined,
 			].filter(Boolean);
 
 			vscode.window.showInformationMessage(lines.join(" | "));
@@ -1835,7 +2806,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.openNugetPage",
 		async (item?: any) => {
 			if (!isValidPackageId(item?.packageId)) {
-				vscode.window.showWarningMessage("Could not select a package.");
+				vscode.window.showWarningMessage(vscode.l10n.t("Could not select a package."));
 				return;
 			}
 
@@ -1850,26 +2821,26 @@ export function activate(context: vscode.ExtensionContext) {
 		async () => {
 			const workspaceRoot = workspaceScanner.getWorkspaceRoot();
 			if (!workspaceRoot) {
-				vscode.window.showErrorMessage("No workspace is open.");
+				vscode.window.showErrorMessage(vscode.l10n.t("No workspace is open."));
 				return;
 			}
 
 			const projects = await workspaceScanner.findProjects();
 			if (projects.length === 0) {
-				vscode.window.showErrorMessage("No .csproj or .fsproj was found to restore.");
+				vscode.window.showErrorMessage(vscode.l10n.t("No .csproj, .fsproj or .vbproj was found to restore."));
 				return;
 			}
 
 			await writeQueue.run(async () => vscode.window.withProgress(
 				{ location: vscode.ProgressLocation.Notification, title: "PackageHub", cancellable: false },
 				async (progress) => {
-					progress.report({ message: "Restore is running..." });
+					progress.report({ message: vscode.l10n.t("Restore is running...") });
 
 					try {
 						await restoreForProjects(projects.map((project) => project.fsPath));
-						vscode.window.showInformationMessage("Restore finished.");
+						vscode.window.showInformationMessage(vscode.l10n.t("Restore finished."));
 					} catch (error) {
-						showFailure("Restore failed", error);
+						showFailure(vscode.l10n.t("Restore failed"), error);
 					}
 					await vscode.commands.executeCommand("packageHub.scanWorkspace");
 				}
@@ -1889,7 +2860,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!packageId) {
-				vscode.window.showWarningMessage("No package was found on this line.");
+				vscode.window.showWarningMessage(vscode.l10n.t("No package was found on this line."));
 				return;
 			}
 
@@ -1910,7 +2881,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!packageId) {
-				vscode.window.showWarningMessage("No package was found on this line.");
+				vscode.window.showWarningMessage(vscode.l10n.t("No package was found on this line."));
 				return;
 			}
 
@@ -1923,7 +2894,7 @@ export function activate(context: vscode.ExtensionContext) {
 				);
 				if (!match) {
 					vscode.window.showWarningMessage(
-						`No project was found for ${packageId}: ${requestedProject}`
+						vscode.l10n.t("No project was found for {0}: {1}", packageId, requestedProject)
 					);
 					return;
 				}
@@ -1933,7 +2904,7 @@ export function activate(context: vscode.ExtensionContext) {
 			} else if (projects.length === 1) {
 				projectPath = projects[0].fsPath;
 			} else if (projects.length === 0) {
-				vscode.window.showErrorMessage("No .csproj or .fsproj file was found in the workspace.");
+				vscode.window.showErrorMessage(vscode.l10n.t("No .csproj, .fsproj or .vbproj file was found in the workspace."));
 				return;
 			} else {
 				const picked = await vscode.window.showQuickPick(
@@ -1942,7 +2913,7 @@ export function activate(context: vscode.ExtensionContext) {
 						description: project.fsPath,
 						fsPath: project.fsPath,
 					})),
-					{ placeHolder: "Select a project for Why" }
+					{ placeHolder: vscode.l10n.t("Select a project for Why") }
 				);
 				if (!picked) {
 					return;
@@ -1951,7 +2922,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			if (!projectPath) {
-				vscode.window.showErrorMessage("No .csproj or .fsproj file was found in the workspace.");
+				vscode.window.showErrorMessage(vscode.l10n.t("No .csproj, .fsproj or .vbproj file was found in the workspace."));
 				return;
 			}
 
@@ -1964,7 +2935,7 @@ export function activate(context: vscode.ExtensionContext) {
 					cancellable: false,
 				},
 				async (progress) => {
-					progress.report({ message: `Finding why ${packageId} is here…` });
+					progress.report({ message: vscode.l10n.t("Finding why {0} is here…", packageId) });
 
 					try {
 						const text = await dotnetCli.why(selectedProject, packageId);
@@ -1973,7 +2944,7 @@ export function activate(context: vscode.ExtensionContext) {
 						logger.appendLine(text);
 						await DependencyGraphPanel.show(packageId);
 						vscode.window.showInformationMessage(
-							`Opened the path for ${packageId}. The CLI text is in the Output panel.`
+							vscode.l10n.t("Opened the path for {0}. The CLI text is in the Output panel.", packageId)
 						);
 					} catch (error: any) {
 						const message = error.message || String(error);
@@ -1991,7 +2962,7 @@ export function activate(context: vscode.ExtensionContext) {
 		async () => {
 			const markdown = buildHealthReport();
 			if (!markdown) {
-				vscode.window.showInformationMessage("Scan first");
+				vscode.window.showInformationMessage(vscode.l10n.t("Scan first"));
 				return;
 			}
 
@@ -1999,10 +2970,10 @@ export function activate(context: vscode.ExtensionContext) {
 				await vscode.env.clipboard.writeText(markdown);
 			} catch (error: any) {
 				logger.error(`Could not copy the health report: ${error?.message || error}`);
-				vscode.window.showErrorMessage("Could not copy the health report.");
+				vscode.window.showErrorMessage(vscode.l10n.t("Could not copy the health report."));
 				return;
 			}
-			vscode.window.showInformationMessage("Health report copied to the clipboard.");
+			vscode.window.showInformationMessage(vscode.l10n.t("Health report copied to the clipboard."));
 		}
 	);
 
@@ -2011,11 +2982,11 @@ export function activate(context: vscode.ExtensionContext) {
 		async () => {
 			const markdown = buildVulnerabilityReport();
 			if (markdown === undefined) {
-				vscode.window.showInformationMessage("Scan first");
+				vscode.window.showInformationMessage(vscode.l10n.t("Scan first"));
 				return;
 			}
 			if (markdown === "") {
-				vscode.window.showInformationMessage("No vulnerabilities.");
+				vscode.window.showInformationMessage(vscode.l10n.t("No vulnerabilities."));
 				return;
 			}
 
@@ -2023,10 +2994,10 @@ export function activate(context: vscode.ExtensionContext) {
 				await vscode.env.clipboard.writeText(markdown);
 			} catch (error: any) {
 				logger.error(`Could not copy the vulnerability report: ${error?.message || error}`);
-				vscode.window.showErrorMessage("Could not copy the vulnerability report.");
+				vscode.window.showErrorMessage(vscode.l10n.t("Could not copy the vulnerability report."));
 				return;
 			}
-			vscode.window.showInformationMessage("Vulnerability report copied to the clipboard.");
+			vscode.window.showInformationMessage(vscode.l10n.t("Vulnerability report copied to the clipboard."));
 		}
 	);
 
@@ -2034,7 +3005,7 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.openAdvisory",
 		async (url?: unknown) => {
 			if (typeof url !== "string" || !url.startsWith("https://")) {
-				vscode.window.showWarningMessage("No advisory link.");
+				vscode.window.showWarningMessage(vscode.l10n.t("No advisory link."));
 				return;
 			}
 
@@ -2046,16 +3017,33 @@ export function activate(context: vscode.ExtensionContext) {
 		"packageHub.quickFixBlocked",
 		async (message?: unknown) => {
 			vscode.window.showWarningMessage(
-				typeof message === "string" && message ? message.slice(0, 300) : "No patch version. The update was not started."
+				typeof message === "string" && message ? message.slice(0, 300) : vscode.l10n.t("No patch version. The update was not started.")
 			);
 		}
 	);
+
+	HealthDashboardPanel.searchHandler = async (query, online) => {
+		const result = await searchForDashboard(query, online);
+		return {
+			hits: result.hits.slice(0, 25).map((hit) => ({
+				id: hit.id,
+				version: hit.latestVersion ?? hit.versions[0] ?? "",
+				description: hit.description,
+				source: hit.source === "local" ? "local" : hit.sourceName ?? "feed",
+			})).filter((hit) => hit.version),
+			problems: result.problems,
+			error: result.error,
+		};
+	};
+	const addPackageCommand = vscode.commands.registerCommand("packageHub.addPackage", (args?: { packageId?: unknown; version?: unknown; query?: unknown }) => addPackage(args));
+	const alignVersionsCommand = vscode.commands.registerCommand("packageHub.alignVersions", (args?: unknown) => alignVersions(args));
+	const removeUnusedVersionsCommand = vscode.commands.registerCommand("packageHub.removeUnusedCentralVersions", () => removeUnusedCentralVersions());
 
 	const codeLensPendingCommand = vscode.commands.registerCommand(
 		"packageHub.codeLensPending",
 		async () => {
 			vscode.window.showInformationMessage(
-				"The lens above the line shows the version once the patch list is ready. Latest is not on this line."
+				vscode.l10n.t("The lens above the line shows the version once the patch list is ready. Latest is not on this line.")
 			);
 		}
 	);
@@ -2085,11 +3073,14 @@ export function activate(context: vscode.ExtensionContext) {
 		openAdvisoryCommand,
 		quickFixBlockedCommand,
 		codeLensPendingCommand,
+		addPackageCommand,
+		alignVersionsCommand,
+		removeUnusedVersionsCommand,
 		logger
 	);
 
 	// A changed project or props file makes the MSBuild evaluation stale.
-	const evaluationWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,props,targets}");
+	const evaluationWatcher = vscode.workspace.createFileSystemWatcher("**/*.{csproj,fsproj,vbproj,props,targets}");
 	evaluationWatcher.onDidChange(() => forgetEvaluations());
 	evaluationWatcher.onDidCreate(() => forgetEvaluations());
 	evaluationWatcher.onDidDelete(() => forgetEvaluations());
@@ -2114,7 +3105,7 @@ export function activate(context: vscode.ExtensionContext) {
 				} catch (error) {
 					logger.error(`Restore after save failed: ${errorText(error)}`);
 					void vscode.window.showWarningMessage(
-						"Restore after save failed. The scan shows what dotnet could still read. See the Output panel."
+						vscode.l10n.t("Restore after save failed. The scan shows what dotnet could still read. See the Output panel.")
 					);
 				}
 			}

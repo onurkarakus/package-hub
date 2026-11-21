@@ -408,4 +408,28 @@ suite("Dashboard state", () => {
         assert.strictEqual(state.scannedAt, "2026-11-04T20:58:00.000Z");
         assert.strictEqual(JSON.stringify(JSON.parse(json)), json);
     });
+
+    test("drifted versions become an align action", () => {
+        const state = buildDashboardState(input({
+            alignments: [{
+                packageId: "Serilog", major: 3, target: "3.1.1",
+                moves: [{ projectName: "Shop.Worker", from: "3.0.0" }], aligned: ["Shop.Api"],
+            }],
+        }));
+        const action = findAction(state, "align:Serilog");
+        assert.ok(action);
+        assert.strictEqual(action.kind, "align");
+        assert.strictEqual(action.badge, "minor");
+        assert.deepStrictEqual(action.updates, [{ packageId: "Serilog", from: "3.0.0", to: "3.1.1", change: "minor" }]);
+        assert.deepStrictEqual(action.projects, ["Shop.Worker"]);
+        assert.ok(action.preview.lines.includes("Shop.Worker: 3.0.0 → 3.1.1"));
+        assert.ok(action.preview.lines.includes("Already at 3.1.1: Shop.Api."));
+    });
+
+    test("a patch-level alignment shows a patch badge", () => {
+        const state = buildDashboardState(input({
+            alignments: [{ packageId: "Serilog", major: 3, target: "3.1.1", moves: [{ projectName: "Shop.Worker", from: "3.1.0" }], aligned: [] }],
+        }));
+        assert.strictEqual(findAction(state, "align:Serilog")?.badge, "patch");
+    });
 });

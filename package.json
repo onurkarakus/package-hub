@@ -2,8 +2,8 @@
   "name": "package-hub",
   "publisher": "onurkarakus",
   "displayName": "PackageHub",
-  "description": "See vulnerable, outdated and deprecated NuGet packages in your C# and F# projects, and apply safe updates in a few clicks. Local-first, no telemetry.",
-  "version": "0.2.0",
+  "description": "See vulnerable, outdated and deprecated NuGet packages in your C#, F# and Visual Basic projects, add packages, align versions and apply safe updates in a few clicks. Local-first, no telemetry.",
+  "version": "0.3.0",
   "license": "MIT",
   "author": {
     "name": "Onur Karakuş"
@@ -39,7 +39,11 @@
     "central package management",
     "directory.packages.props",
     ".net",
-    "packages"
+    "packages",
+    "vbproj",
+    "visual basic",
+    "add package",
+    "slnx"
   ],
   "icon": "media/packagehub-logo.png",
   "galleryBanner": {
@@ -47,10 +51,11 @@
     "theme": "dark"
   },
   "activationEvents": [
-    "workspaceContains:**/*.{csproj,fsproj,sln,slnx}",
+    "workspaceContains:**/*.{csproj,fsproj,vbproj,sln,slnx}",
     "workspaceContains:**/Directory.Packages.props"
   ],
   "main": "./dist/extension.js",
+  "l10n": "./l10n",
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
@@ -146,6 +151,20 @@
         "command": "packageHub.openWalkthrough",
         "title": "%command.openWalkthrough%",
         "icon": "$(book)"
+      },
+      {
+        "command": "packageHub.addPackage",
+        "title": "%command.addPackage%",
+        "icon": "$(add)"
+      },
+      {
+        "command": "packageHub.alignVersions",
+        "title": "%command.alignVersions%",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "packageHub.removeUnusedCentralVersions",
+        "title": "%command.removeUnusedCentralVersions%"
       }
     ],
     "viewsContainers": {
@@ -340,12 +359,39 @@
             "minimum": 1,
             "maximum": 16,
             "description": "%config.maxDotnetProcesses.description%"
+          },
+          "packageHub.badge": {
+            "type": "string",
+            "enum": [
+              "vulnerable",
+              "vulnerableAndOutdated",
+              "all",
+              "off"
+            ],
+            "enumDescriptions": [
+              "%config.badge.vulnerable%",
+              "%config.badge.vulnerableAndOutdated%",
+              "%config.badge.all%",
+              "%config.badge.off%"
+            ],
+            "default": "vulnerable",
+            "description": "%config.badge.description%"
+          },
+          "packageHub.rollbackOnFailure": {
+            "type": "boolean",
+            "default": true,
+            "description": "%config.rollbackOnFailure.description%"
           }
         }
       }
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "packageHub.addPackage",
+          "when": "view == packageHubExplorer",
+          "group": "navigation@0"
+        },
         {
           "command": "packageHub.scanWorkspace",
           "when": "view == packageHubExplorer",
@@ -364,70 +410,80 @@
       ],
       "view/item/context": [
         {
+          "command": "packageHub.alignVersions",
+          "when": "view == packageHubExplorer && viewItem == packageHub.package.conflict",
+          "group": "inline"
+        },
+        {
+          "command": "packageHub.alignVersions",
+          "when": "view == packageHubExplorer && viewItem == packageHub.package.conflict",
+          "group": "packageHub@0"
+        },
+        {
           "command": "packageHub.updateSelectedPackage",
-          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "when": "view == packageHubExplorer && viewItem =~ /^packageHub\\.package/",
           "group": "packageHub@1"
         },
         {
           "command": "packageHub.showPackageInfo",
-          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "when": "view == packageHubExplorer && viewItem =~ /^packageHub\\.package/",
           "group": "packageHub@2"
         },
         {
           "command": "packageHub.openNugetPage",
-          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "when": "view == packageHubExplorer && viewItem =~ /^packageHub\\.package/",
           "group": "packageHub@3"
         },
         {
           "command": "packageHub.ignorePackage",
-          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "when": "view == packageHubExplorer && viewItem =~ /^packageHub\\.package/",
           "group": "packageHub@4"
         },
         {
           "command": "packageHub.showDependencyGraph",
-          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "when": "view == packageHubExplorer && viewItem =~ /^packageHub\\.package/",
           "group": "packageHub@5"
         },
         {
           "command": "packageHub.whyPackage",
-          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "when": "view == packageHubExplorer && viewItem =~ /^packageHub\\.package/",
           "group": "packageHub@6"
         },
         {
           "command": "packageHub.removePackage",
-          "when": "view == packageHubExplorer && viewItem == packageHub.package",
+          "when": "view == packageHubExplorer && viewItem =~ /^packageHub\\.package/",
           "group": "packageHub@7"
         }
       ],
       "editor/context": [
         {
           "command": "packageHub.updateLinePatch",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props",
           "group": "packageHub@1"
         },
         {
           "command": "packageHub.updateLineLatest",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props",
           "group": "packageHub@2"
         },
         {
           "command": "packageHub.openLineAdvisory",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props",
           "group": "packageHub@3"
         },
         {
           "command": "packageHub.whyPackage",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props",
           "group": "packageHub@4"
         },
         {
           "command": "packageHub.ignorePackage",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props",
           "group": "packageHub@5"
         },
         {
           "command": "packageHub.removePackage",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props",
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props",
           "group": "packageHub@6"
         }
       ],
@@ -450,15 +506,15 @@
         },
         {
           "command": "packageHub.updateLinePatch",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props"
         },
         {
           "command": "packageHub.updateLineLatest",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props"
         },
         {
           "command": "packageHub.openLineAdvisory",
-          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .props"
+          "when": "resourceExtname == .csproj || resourceExtname == .fsproj || resourceExtname == .vbproj || resourceExtname == .props"
         }
       ]
     }

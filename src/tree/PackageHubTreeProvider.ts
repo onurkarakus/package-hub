@@ -7,6 +7,7 @@ import { directProjectNames, formatProjectRelations, transitiveCaption } from ".
 import { getFeedHealth } from "../services/FeedHealth";
 import { welcomeState } from "../services/welcomeState";
 import { readPackageRefs, severityRank as severityLevel } from "../utils/nugetAudit";
+import { badgeMode } from "../services/Settings";
 
 const errorColor = new vscode.ThemeColor("problemsErrorIcon.foreground");
 const warningColor = new vscode.ThemeColor("problemsWarningIcon.foreground");
@@ -22,12 +23,16 @@ type ItemOptions = {
     icon?: vscode.ThemeIcon;
     tooltip?: string | vscode.MarkdownString;
     resourceUri?: vscode.Uri;
+    /** Stable key of a section node, independent of the display language. */
+    sectionKey?: string;
+    contextValue?: string;
 };
 
 export class PackageHubTreeItem extends vscode.TreeItem {
     public readonly packageId?: string;
     public readonly latestVersion?: string;
     public readonly projectPath?: string;
+    public readonly sectionKey?: string;
 
     constructor(
         public readonly label: string,
@@ -38,6 +43,7 @@ export class PackageHubTreeItem extends vscode.TreeItem {
         this.packageId = options?.packageId;
         this.latestVersion = options?.latestVersion;
         this.projectPath = options?.projectPath;
+        this.sectionKey = options?.sectionKey;
 
         if (options?.description) {
             this.description = options.description;
@@ -55,7 +61,7 @@ export class PackageHubTreeItem extends vscode.TreeItem {
             this.resourceUri = options.resourceUri;
         }
         if (options?.packageId) {
-            this.contextValue = "packageHub.package";
+            this.contextValue = options.contextValue ?? "packageHub.package";
         }
     }
 }
@@ -114,12 +120,12 @@ export class PackageHubTreeProvider
 
         if (!element && !ScanState.getScannedAt()) {
             return [
-                new PackageHubTreeItem("Scan Now", vscode.TreeItemCollapsibleState.None, {
+                new PackageHubTreeItem(vscode.l10n.t("Scan Now"), vscode.TreeItemCollapsibleState.None, {
                     command: {
                         command: "packageHub.scanWorkspace",
-                        title: "Scan Workspace",
+                        title: vscode.l10n.t("Scan Workspace"),
                     },
-                    description: "Not scanned",
+                    description: vscode.l10n.t("Not scanned"),
                     icon: new vscode.ThemeIcon("search"),
                 }),
             ];
@@ -132,27 +138,30 @@ export class PackageHubTreeProvider
                 + (feeds.unmatched.length > 0 ? 1 : 0);
             const expandProjects = projects.length > 0 && projects.length <= 4 && vulnerable.length > 0;
             return [
-                section("Vulnerable", vulnerable.length, vulnerable.length > 0, new vscode.ThemeIcon("error", errorColor)),
-                section("Outdated", outdated.length, vulnerable.length === 0 && outdated.length > 0, new vscode.ThemeIcon("arrow-circle-up", warningColor)),
-                section("Deprecated", deprecated.length, false, new vscode.ThemeIcon("archive", warningColor)),
-                section("Conflicts", conflicts.length, false, new vscode.ThemeIcon("diff", warningColor)),
+                section("Vulnerable", vscode.l10n.t("Vulnerable"), vulnerable.length, vulnerable.length > 0, new vscode.ThemeIcon("error", errorColor)),
+                section("Outdated", vscode.l10n.t("Outdated"), outdated.length, vulnerable.length === 0 && outdated.length > 0, new vscode.ThemeIcon("arrow-circle-up", warningColor)),
+                section("Deprecated", vscode.l10n.t("Deprecated"), deprecated.length, false, new vscode.ThemeIcon("archive", warningColor)),
+                section("Conflicts", vscode.l10n.t("Conflicts"), conflicts.length, false, new vscode.ThemeIcon("diff", warningColor)),
                 section(
                     "Projects",
+                    vscode.l10n.t("Projects"),
                     projects.length,
                     expandProjects,
                     new vscode.ThemeIcon("project"),
                     projects.length > 0
                 ),
-                new PackageHubTreeItem("Feeds", vscode.TreeItemCollapsibleState.Collapsed, {
+                new PackageHubTreeItem(vscode.l10n.t("Feeds"), vscode.TreeItemCollapsibleState.Collapsed, {
+                    sectionKey: "Feeds",
                     description: feeds.sources
-                        ? `${feeds.sources.filter((source) => source.enabled).length} enabled${failingFeeds > 0 ? ` · ${failingFeeds} failed` : ""}`
-                        : "Not read",
+                        ? `${vscode.l10n.t("{0} enabled", feeds.sources.filter((source) => source.enabled).length)}${failingFeeds > 0 ? ` · ${vscode.l10n.t("{0} failed", failingFeeds)}` : ""}`
+                        : vscode.l10n.t("Not read"),
                     icon: failingFeeds > 0
                         ? new vscode.ThemeIcon("warning", warningColor)
                         : new vscode.ThemeIcon("cloud"),
-                    tooltip: "Package sources dotnet uses, and failures from the last scan or restore.",
+                    tooltip: vscode.l10n.t("Package sources dotnet uses, and failures from the last scan or restore."),
                 }),
-                new PackageHubTreeItem("Actions", vscode.TreeItemCollapsibleState.Collapsed, {
+                new PackageHubTreeItem(vscode.l10n.t("Actions"), vscode.TreeItemCollapsibleState.Collapsed, {
+                    sectionKey: "Actions",
                     icon: new vscode.ThemeIcon("tools"),
                 }),
             ];
@@ -162,13 +171,13 @@ export class PackageHubTreeProvider
             return packagesForProject(element.projectPath);
         }
 
-        if (element.label === "Projects") {
+        if (element.sectionKey === "Projects") {
             return projectNodes();
         }
 
-        if (element.label === "Vulnerable") {
+        if (element.sectionKey === "Vulnerable") {
             if (vulnerable.length === 0) {
-                return [emptyItem("No vulnerable packages")];
+                return [emptyItem(vscode.l10n.t("No vulnerable packages"))];
             }
 
             return [...vulnerable]
@@ -176,9 +185,9 @@ export class PackageHubTreeProvider
                 .map((pkg) => packageItem(pkg.id, vulnerableDescription(pkg), severityIcon(pkg.severity), pkg.latestVersion));
         }
 
-        if (element.label === "Outdated") {
+        if (element.sectionKey === "Outdated") {
             if (outdated.length === 0) {
-                return [emptyItem("No outdated packages")];
+                return [emptyItem(vscode.l10n.t("No outdated packages"))];
             }
 
             return [...outdated]
@@ -191,9 +200,9 @@ export class PackageHubTreeProvider
                 ));
         }
 
-        if (element.label === "Deprecated") {
+        if (element.sectionKey === "Deprecated") {
             if (deprecated.length === 0) {
-                return [emptyItem("No deprecated packages")];
+                return [emptyItem(vscode.l10n.t("No deprecated packages"))];
             }
 
             return [...deprecated]
@@ -206,31 +215,36 @@ export class PackageHubTreeProvider
                 ));
         }
 
-        if (element.label === "Conflicts") {
+        if (element.sectionKey === "Conflicts") {
             if (conflicts.length === 0) {
-                return [emptyItem("No version conflicts")];
+                return [emptyItem(vscode.l10n.t("No version conflicts"))];
             }
 
             return conflicts.map(
                 (conflict) => packageItem(
                     conflict.id,
                     conflict.versions.map((version) => version.version).join(" / "),
-                    new vscode.ThemeIcon("diff", warningColor)
+                    new vscode.ThemeIcon("diff", warningColor),
+                    undefined,
+                    "packageHub.package.conflict"
                 )
             );
         }
 
-        if (element.label === "Feeds") {
+        if (element.sectionKey === "Feeds") {
             return feedNodes();
         }
 
-        if (element.label === "Actions") {
+        if (element.sectionKey === "Actions") {
             return [
-                action("Scan Now", "packageHub.scanWorkspace", "search"),
-                action("Open Dashboard", "packageHub.showHealthDashboard", "dashboard"),
-                action("Copy Health Report", "packageHub.copyHealthReport", "notebook"),
-                action("Copy Vulnerability Report", "packageHub.copyVulnerabilityReport", "shield"),
-                action("Restore All", "packageHub.restoreAll", "cloud-download"),
+                action(vscode.l10n.t("Scan Now"), "packageHub.scanWorkspace", "search"),
+                action(vscode.l10n.t("Open Dashboard"), "packageHub.showHealthDashboard", "dashboard"),
+                action(vscode.l10n.t("Add Package"), "packageHub.addPackage", "add"),
+                action(vscode.l10n.t("Align Versions"), "packageHub.alignVersions", "git-merge"),
+                action(vscode.l10n.t("Remove Unused Central Versions"), "packageHub.removeUnusedCentralVersions", "trash"),
+                action(vscode.l10n.t("Copy Health Report"), "packageHub.copyHealthReport", "notebook"),
+                action(vscode.l10n.t("Copy Vulnerability Report"), "packageHub.copyVulnerabilityReport", "shield"),
+                action(vscode.l10n.t("Restore All"), "packageHub.restoreAll", "cloud-download"),
             ];
         }
 
@@ -242,14 +256,28 @@ export class PackageHubTreeProvider
             return;
         }
 
-        const count = ScanState.getScannedAt() ? ScanState.getVulnerable().length : 0;
+        const mode = badgeMode();
+        if (mode === "off" || !ScanState.getScannedAt()) {
+            this.view.badge = undefined;
+            return;
+        }
+        const vulnerable = ScanState.getVulnerable().length;
+        const outdated = mode === "vulnerable" ? 0 : ScanState.getOutDated().length;
+        const deprecated = mode === "all" ? ScanState.getDeprecated().length : 0;
+        const count = vulnerable + outdated + deprecated;
+        const parts = [
+            vscode.l10n.t("{0} vulnerable", vulnerable),
+            ...(mode !== "vulnerable" ? [vscode.l10n.t("{0} outdated", outdated)] : []),
+            ...(mode === "all" ? [vscode.l10n.t("{0} deprecated", deprecated)] : []),
+        ];
         this.view.badge = count > 0
-            ? { value: count, tooltip: `${count} vulnerable` }
+            ? { value: count, tooltip: parts.join(" · ") }
             : undefined;
     }
 }
 
 function section(
+    key: string,
     label: string,
     count: number,
     expanded: boolean,
@@ -260,6 +288,7 @@ function section(
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed;
     return new PackageHubTreeItem(label, open, {
+        sectionKey: key,
         description: String(count),
         icon: count > 0 || alwaysActive ? activeIcon : new vscode.ThemeIcon("check", passColor),
         tooltip: `${label}: ${count}`,
@@ -283,18 +312,20 @@ function packageItem(
     id: string,
     description: string,
     icon: vscode.ThemeIcon,
-    latestVersion?: string
+    latestVersion?: string,
+    contextValue?: string
 ): PackageHubTreeItem {
     const found = ScanState.findPackage(id);
     const latest = latestVersion || found.outdated?.latestVersion || found.vulnerable?.latestVersion;
     return new PackageHubTreeItem(id, vscode.TreeItemCollapsibleState.None, {
         command: {
             command: "packageHub.revealPackage",
-            title: "Open Package",
+            title: vscode.l10n.t("Open Package"),
             arguments: [{ packageId: id }],
         },
         description,
         packageId: id,
+        contextValue,
         latestVersion: latest,
         icon,
         tooltip: packageTooltip(id, description),
@@ -310,7 +341,7 @@ async function projectNodes(): Promise<PackageHubTreeItem[]> {
 
     if (projects.length === 0) {
         return [
-            new PackageHubTreeItem("No projects", vscode.TreeItemCollapsibleState.None, {
+            new PackageHubTreeItem(vscode.l10n.t("No projects"), vscode.TreeItemCollapsibleState.None, {
                 icon: new vscode.ThemeIcon("info", infoColor),
             }),
         ];
@@ -323,7 +354,7 @@ async function projectNodes(): Promise<PackageHubTreeItem[]> {
         items.push(new PackageHubTreeItem(name, vscode.TreeItemCollapsibleState.Collapsed, {
             projectPath: project.fsPath,
             resourceUri: project,
-            description: rows ? projectHealthText(rows) : "Could not read the csproj.",
+            description: rows ? projectHealthText(rows) : vscode.l10n.t("Could not read the csproj."),
             icon: rows ? projectIcon(rows) : new vscode.ThemeIcon("error", errorColor),
             tooltip: project.fsPath,
         }));
@@ -335,7 +366,7 @@ async function packagesForProject(projectPath: string): Promise<PackageHubTreeIt
     const rows = await readProjectPackages(projectPath);
     if (!rows) {
         return [
-            new PackageHubTreeItem("Could not read the csproj.", vscode.TreeItemCollapsibleState.None, {
+            new PackageHubTreeItem(vscode.l10n.t("Could not read the csproj."), vscode.TreeItemCollapsibleState.None, {
                 icon: new vscode.ThemeIcon("error", errorColor),
             }),
         ];
@@ -348,9 +379,9 @@ async function packagesForProject(projectPath: string): Promise<PackageHubTreeIt
 
     if (list.length === 0) {
         return [
-            new PackageHubTreeItem("No packages", vscode.TreeItemCollapsibleState.None, {
+            new PackageHubTreeItem(vscode.l10n.t("No packages"), vscode.TreeItemCollapsibleState.None, {
                 icon: new vscode.ThemeIcon("info", infoColor),
-                tooltip: "No PackageReference in this file.",
+                tooltip: vscode.l10n.t("No PackageReference in this file."),
             }),
         ];
     }
@@ -388,7 +419,7 @@ async function readProjectPackages(
 
 function projectHealthText(rows: { id: string }[]): string {
     if (rows.length === 0) {
-        return "No packages";
+        return vscode.l10n.t("No packages");
     }
 
     let vulnerable = 0;
@@ -407,16 +438,16 @@ function projectHealthText(rows: { id: string }[]): string {
 
     const parts: string[] = [];
     if (vulnerable > 0) {
-        parts.push(`${vulnerable} vulnerable`);
+        parts.push(vscode.l10n.t("{0} vulnerable", vulnerable));
     }
     if (outdated > 0) {
-        parts.push(`${outdated} outdated`);
+        parts.push(vscode.l10n.t("{0} outdated", outdated));
     }
     if (deprecated > 0) {
-        parts.push(`${deprecated} deprecated`);
+        parts.push(vscode.l10n.t("{0} deprecated", deprecated));
     }
     if (parts.length === 0) {
-        return rows.length === 1 ? "1 package" : `${rows.length} packages`;
+        return rows.length === 1 ? vscode.l10n.t("1 package") : vscode.l10n.t("{0} packages", rows.length);
     }
     return parts.join(" · ");
 }
@@ -511,17 +542,17 @@ function packageTooltip(id: string, description: string): vscode.MarkdownString 
         }
         if (info.highestPatch) {
             tooltip.appendMarkdown("\n\n");
-            tooltip.appendText(`Highest patch ${info.highestPatch}`);
+            tooltip.appendText(vscode.l10n.t("Highest patch {0}", info.highestPatch));
         }
         if (info.latestVersion && info.latestVersion !== info.highestPatch) {
             tooltip.appendMarkdown("\n\n");
-            tooltip.appendText(`Latest ${info.latestVersion}`);
+            tooltip.appendText(vscode.l10n.t("Latest {0}", info.latestVersion));
         }
     }
 
     const advisory = found.vulnerable?.advisoryUrl;
     if (advisory && advisory.startsWith("https://") && !advisory.includes(" ")) {
-        tooltip.appendMarkdown(`\n\n[Advisory](${advisory})`);
+        tooltip.appendMarkdown(`\n\n[${vscode.l10n.t("Advisory")}](${advisory})`);
     }
 
     tooltip.isTrusted = false;
@@ -539,7 +570,7 @@ function feedNodes(): PackageHubTreeItem[] {
     const state = getFeedHealth();
     if (!state.sources) {
         return [new PackageHubTreeItem(
-            state.sourceError ? "dotnet did not list the sources" : "Scan to read the sources",
+            state.sourceError ? vscode.l10n.t("dotnet did not list the sources") : vscode.l10n.t("Scan to read the sources"),
             vscode.TreeItemCollapsibleState.None,
             { icon: new vscode.ThemeIcon("info", infoColor), tooltip: state.sourceError }
         )];
@@ -558,7 +589,7 @@ function feedNodes(): PackageHubTreeItem[] {
         }
         tooltip.isTrusted = false;
         return new PackageHubTreeItem(status.name, vscode.TreeItemCollapsibleState.None, {
-            description: !status.enabled ? "disabled" : failed ? `failed (${status.failures[0].code})` : "enabled",
+            description: !status.enabled ? vscode.l10n.t("disabled") : failed ? vscode.l10n.t("failed ({0})", status.failures[0].code) : vscode.l10n.t("enabled"),
             icon: !status.enabled
                 ? new vscode.ThemeIcon("circle-slash")
                 : failed
@@ -575,7 +606,7 @@ function feedNodes(): PackageHubTreeItem[] {
         }));
     }
     if (items.length === 0) {
-        items.push(emptyItem("No package sources"));
+        items.push(emptyItem(vscode.l10n.t("No package sources")));
     }
     return items;
 }

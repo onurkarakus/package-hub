@@ -59,6 +59,51 @@ suite("Webview and hover safety", () => {
         assert.strictEqual(isActionId(42), false);
     });
 
+    test("the add package messages are checked", () => {
+        assert.deepStrictEqual(readDashboardMessage({ command: "searchPackages", query: " Serilog ", online: true }), {
+            command: "searchPackages", query: "Serilog", online: true,
+        });
+        assert.deepStrictEqual(readDashboardMessage({ command: "searchPackages", query: "json", online: "yes" }), {
+            command: "searchPackages", query: "json", online: false,
+        });
+        assert.strictEqual(readDashboardMessage({ command: "searchPackages", query: "--source https://evil" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "searchPackages", query: "x".repeat(101) }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "searchPackages" }), undefined);
+        assert.deepStrictEqual(readDashboardMessage({ command: "addPackage", packageId: "Serilog", version: "4.0.0" }), {
+            command: "addPackage", packageId: "Serilog", version: "4.0.0",
+        });
+        assert.deepStrictEqual(readDashboardMessage({ command: "addPackage", packageId: "Serilog" }), {
+            command: "addPackage", packageId: "Serilog", version: undefined,
+        });
+        assert.strictEqual(readDashboardMessage({ command: "addPackage", packageId: "Serilog", version: "4.0.0 --source x" }), undefined);
+        assert.strictEqual(readDashboardMessage({ command: "addPackage", packageId: "../Serilog" }), undefined);
+    });
+
+    test("align action ids are accepted", () => {
+        assert.strictEqual(isActionId("align:Serilog"), true);
+        assert.strictEqual(isActionId("align:"), false);
+        assert.strictEqual(isActionId("align:a b"), false);
+    });
+
+    test("the page strings travel in a data attribute, escaped", () => {
+        const html = dashboardHtml({
+            cspSource: "vscode-resource:",
+            nonce: "abc123",
+            scriptUri: "vscode-resource:/media/dashboard.js",
+            styleUri: "vscode-resource:/media/dashboard.css",
+            strings: { Feeds: "Kaynaklar \"<b>\"" },
+            language: "tr\"><x",
+        });
+        assert.match(html, /<html lang="trx">/);
+        const raw = html.match(/data-l10n="([^"]*)"/)?.[1];
+        assert.ok(raw);
+        assert.ok(!raw.includes("<"));
+        const decoded = raw.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+        assert.deepStrictEqual(JSON.parse(decoded), { Feeds: "Kaynaklar \"<b>\"" });
+        assert.match(html, /id="add-query"/);
+        assert.match(html, /data-tab="add"/);
+    });
+
     test("the dashboard page has a nonce CSP and no inline script or style", () => {
         const html = dashboardHtml({
             cspSource: "vscode-resource:",

@@ -147,7 +147,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
     ): Promise<vscode.CodeAction[]> {
         if (!ScanState.getScannedAt()) {
             return [this.commandAction(
-                "PackageHub: Scan required before update",
+                vscode.l10n.t("PackageHub: Scan required before update"),
                 "packageHub.scanWorkspace",
                 [],
                 false
@@ -189,14 +189,14 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         if (origin?.absentFromGraph) {
             actions.push(this.commandAction(
-                "PackageHub: this warning may be left over in the package graph",
+                vscode.l10n.t("PackageHub: this warning may be left over in the package graph"),
                 "packageHub.quickFixBlocked",
                 ["this warning may be left over in the package graph"],
                 false
             ));
             if (advisory) {
                 actions.push(this.commandAction(
-                    "PackageHub: Open Advisory",
+                    vscode.l10n.t("PackageHub: Open Advisory"),
                     "packageHub.openAdvisory",
                     [advisory],
                     false
@@ -215,7 +215,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         if (parentUpdate) {
             actions.push(this.commandAction(
-                `PackageHub: Update ${parentUpdate.id} to highest patch ${parentUpdate.version}`,
+                vscode.l10n.t("PackageHub: Update {0} to highest patch {1}", parentUpdate.id, parentUpdate.version),
                 "packageHub.updateVulnerable",
                 [{ packageId: parentUpdate.id, version: parentUpdate.version, projectName }],
                 true
@@ -223,7 +223,7 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
         }
 
         if (ownsPatch && owningProject && targets.patch) {
-            const base = `PackageHub: Update ${packageId} in ${owningProject} to highest patch ${targets.patch}`;
+            const base = vscode.l10n.t("PackageHub: Update {0} in {1} to highest patch {2}", packageId, owningProject, targets.patch);
             actions.push(this.commandAction(
                 this.withVerdict(base, packageId, advisory, targets.patch),
                 "packageHub.updateVulnerable",
@@ -234,8 +234,8 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         if (targets.patch) {
             const base = direct
-                ? `PackageHub: Update to highest patch ${targets.patch}`
-                : `PackageHub: Pin ${packageId} at ${targets.patch} (transitive)`;
+                ? vscode.l10n.t("PackageHub: Update to highest patch {0}", targets.patch)
+                : vscode.l10n.t("PackageHub: Pin {0} at {1} (transitive)", packageId, targets.patch);
             actions.push(this.commandAction(
                 this.withVerdict(base, packageId, advisory, targets.patch),
                 "packageHub.updateVulnerable",
@@ -246,12 +246,12 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         if (targets.latest) {
             const base = direct
-                ? `PackageHub: Update to latest ${targets.latest}`
-                : `PackageHub: Pin ${packageId} at latest ${targets.latest} (transitive)`;
+                ? vscode.l10n.t("PackageHub: Update to latest {0}", targets.latest)
+                : vscode.l10n.t("PackageHub: Pin {0} at latest {1} (transitive)", packageId, targets.latest);
             const mature = latestReleasePreferred(packageId, targets.latest);
             const title = this.withVerdict(base, packageId, advisory, targets.latest);
             actions.push(this.commandAction(
-                mature ? title : `${title}, younger than the age gate`,
+                mature ? title : vscode.l10n.t("{0}, younger than the age gate", title),
                 "packageHub.updateVulnerable",
                 [{ packageId, version: targets.latest, projectName }],
                 !targets.patch && !parentUpdate && !ownsPatch && mature
@@ -264,8 +264,8 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
             && !sameNuGetVersion(fixed, targets.latest);
         if (fixed && showFixed) {
             const base = direct
-                ? `PackageHub: Update to first fixed version ${fixed}`
-                : `PackageHub: Pin ${packageId} at first fixed ${fixed} (transitive)`;
+                ? vscode.l10n.t("PackageHub: Update to first fixed version {0}", fixed)
+                : vscode.l10n.t("PackageHub: Pin {0} at first fixed {1} (transitive)", packageId, fixed);
             actions.push(this.commandAction(
                 this.withVerdict(base, packageId, advisory, fixed),
                 "packageHub.updateVulnerable",
@@ -276,16 +276,16 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
 
         if (!targets.patch && !targets.latest && !showFixed && !parentUpdate) {
             actions.push(this.commandAction(
-                `PackageHub: No patch version for ${packageId}. Update was not started.`,
+                vscode.l10n.t("PackageHub: No patch version for {0}. Update was not started.", packageId),
                 "packageHub.quickFixBlocked",
-                [`No patch version for ${packageId}. The update was not started.`],
+                [vscode.l10n.t("No patch version for {0}. The update was not started.", packageId)],
                 false
             ));
         }
 
         if (advisory) {
             actions.push(this.commandAction(
-                "PackageHub: Open Advisory",
+                vscode.l10n.t("PackageHub: Open Advisory"),
                 "packageHub.openAdvisory",
                 [advisory],
                 false
@@ -342,10 +342,10 @@ export class PackageCodeActionProvider implements vscode.CodeActionProvider {
     ): string {
         const verdict = advisoryVerdict(packageId, advisoryUrl, version);
         if (verdict === "open") {
-            return `${title}, advisory stays open`;
+            return vscode.l10n.t("{0}, advisory stays open", title);
         }
         if (verdict === "closed") {
-            return `${title}, advisory closes`;
+            return vscode.l10n.t("{0}, advisory closes", title);
         }
         return title;
     }

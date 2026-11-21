@@ -89,7 +89,7 @@ export class PackageCodeLensProvider implements vscode.CodeLensProvider, vscode.
 
         if (patch) {
             const title = severity
-                ? `⚠ ${severity} · patch ${patch}`
+                ? vscode.l10n.t("⚠ {0} · patch {1}", severity, patch)
                 : `↑ ${patch}`;
             return new vscode.CodeLens(range, {
                 title,
@@ -110,7 +110,7 @@ export class PackageCodeLensProvider implements vscode.CodeLensProvider, vscode.
             title: `⚠ ${severity}`,
             command: ready ? "packageHub.quickFixBlocked" : "packageHub.codeLensPending",
             arguments: [ready
-                ? `No patch version for ${packageId}. The update was not started.`
+                ? vscode.l10n.t("No patch version for {0}. The update was not started.", packageId)
                 : undefined],
         });
     }

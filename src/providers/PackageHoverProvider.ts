@@ -128,13 +128,13 @@ export class PackageHoverProvider implements vscode.HoverProvider {
 
         const notes = [sentence(explanation.reason)];
         if (usesCentral && centralVersion) {
-            notes.push("Version is read from Directory.Packages.props.");
+            notes.push(vscode.l10n.t("Version is read from Directory.Packages.props."));
         }
         if (usesCentral && !centralVersion) {
-            notes.push("No PackageVersion entry. No version was invented.");
+            notes.push(vscode.l10n.t("No PackageVersion entry. No version was invented."));
         }
         if (!explanation.isVulnerable && !explanation.isDeprecated && !explanation.isOutdated) {
-            notes.push("Run PackageHub: Scan Workspace for the latest data.");
+            notes.push(vscode.l10n.t("Run PackageHub: Scan Workspace for the latest data."));
         }
         lines.push(notes.join(" "));
 
@@ -166,8 +166,8 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         ];
         const others = [
             advisoryUrl
-                ? hoverActionChip("link-external", "Open Advisory", advisoryUrl)
-                : hoverActionChip("link-external", "Open Advisory", "command:packageHub.openAdvisory"),
+                ? hoverActionChip("link-external", vscode.l10n.t("Open Advisory"), advisoryUrl)
+                : hoverActionChip("link-external", vscode.l10n.t("Open Advisory"), "command:packageHub.openAdvisory"),
             this.whyLink(packageId, projectName),
             hoverActionChip(
                 "eye-closed",
@@ -199,10 +199,10 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         if (!peek.ready) {
             if (vulnerable) {
                 lines.push(
-                    "Updates stay on the lightbulb: highest patch, then latest. This hover does not pick a version until that list is ready."
+                    vscode.l10n.t("Updates stay on the lightbulb: highest patch, then latest. This hover does not pick a version until that list is ready.")
                 );
                 if (fixed) {
-                    lines.push(`First fixed \`${escapeHtml(fixed)}\``);
+                    lines.push(vscode.l10n.t("First fixed `{0}`", escapeHtml(fixed)));
                     lines.push(this.verdictSentence(fixed, packageId, advisoryUrl));
                 }
             }
@@ -211,13 +211,13 @@ export class PackageHoverProvider implements vscode.HoverProvider {
 
         const versions: string[] = [];
         if (peek.patch) {
-            versions.push(`Highest patch \`${escapeHtml(peek.patch)}\``);
+            versions.push(vscode.l10n.t("Highest patch `{0}`", escapeHtml(peek.patch)));
         }
         if (peek.latest) {
-            versions.push(`Latest \`${escapeHtml(peek.latest)}\``);
+            versions.push(vscode.l10n.t("Latest `{0}`", escapeHtml(peek.latest)));
         }
         if (fixed) {
-            versions.push(`First fixed \`${escapeHtml(fixed)}\``);
+            versions.push(vscode.l10n.t("First fixed `{0}`", escapeHtml(fixed)));
         }
         if (versions.length > 0) {
             lines.push(versions.join(" · "));
@@ -228,11 +228,11 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         }
         if (peek.latest && peek.latestPreferred === false) {
             lines.push(
-                `\`${escapeHtml(peek.latest)}\` is younger than the age gate. Highest patch stays the preferred update.`
+                vscode.l10n.t("`{0}` is younger than the age gate. Highest patch stays the preferred update.", escapeHtml(peek.latest))
             );
         }
         if (vulnerable && peek.patch) {
-            lines.push("Highest patch stays in the same major.");
+            lines.push(vscode.l10n.t("Highest patch stays in the same major."));
         }
         if (vulnerable && (peek.patch || peek.latest || fixed)) {
             for (const version of [peek.patch, peek.latest, fixed]) {
@@ -242,7 +242,7 @@ export class PackageHoverProvider implements vscode.HoverProvider {
             }
         }
         if (!peek.patch && !peek.latest && !fixed) {
-            lines.push("No newer patch or latest version. Update was not started.");
+            lines.push(vscode.l10n.t("No newer patch or latest version. Update was not started."));
         }
     }
 
@@ -255,12 +255,12 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         const shown = escapeHtml(version);
         const label = escapeHtml(advisoryLabel(advisoryUrl));
         if (verdict === "open") {
-            return `\`${shown}\` leaves ${label} open.`;
+            return vscode.l10n.t("`{0}` leaves {1} open.", shown, label);
         }
         if (verdict === "closed") {
-            return `\`${shown}\` closes ${label}.`;
+            return vscode.l10n.t("`{0}` closes {1}.", shown, label);
         }
-        return `\`${shown}\` has no advisory record. This window does not claim it closes the advisory.`;
+        return vscode.l10n.t("`{0}` has no advisory record. This window does not claim it closes the advisory.", shown);
     }
 
     private projectName(document: vscode.TextDocument): string | undefined {
@@ -300,7 +300,7 @@ export class PackageHoverProvider implements vscode.HoverProvider {
             return undefined;
         }
 
-        return this.updateLink("shield", `First fixed ${fixed}`, packageId, fixed, projectName);
+        return this.updateLink("shield", vscode.l10n.t("First fixed {0}", fixed), packageId, fixed, projectName);
     }
 
     private versionLink(
@@ -311,7 +311,7 @@ export class PackageHoverProvider implements vscode.HoverProvider {
     ): string {
         const version = channel === "patch" ? peek.patch : peek.latest;
         const icon = channel === "patch" ? "arrow-circle-up" : "tag";
-        const label = channel === "patch" ? "Highest patch" : "Latest";
+        const label = channel === "patch" ? vscode.l10n.t("Highest patch") : vscode.l10n.t("Latest");
         if (peek.ready && version) {
             return this.updateLink(
                 icon,
@@ -324,8 +324,8 @@ export class PackageHoverProvider implements vscode.HoverProvider {
         }
 
         const message = peek.ready
-            ? `No ${channel} version for ${packageId}. The update was not started.`
-            : "The patch list is not ready yet. The update was not started.";
+            ? vscode.l10n.t("No {0} version for {1}. The update was not started.", channel, packageId)
+            : vscode.l10n.t("The patch list is not ready yet. The update was not started.");
         return hoverActionChip(
             icon,
             label,

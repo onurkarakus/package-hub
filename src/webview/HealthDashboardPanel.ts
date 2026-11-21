@@ -3,9 +3,12 @@ import * as vscode from "vscode";
 import { advisoryCatalogSource, advisoryVerdict, firstFixedVersion } from "../services/AdvisoryCatalog";
 import { getFeedHealth } from "../services/FeedHealth";
 import { ScanState } from "../services/ScanState";
+import { alignablePackages, planAlignment } from "../services/Consolidate";
+import { isValidSearchQuery } from "../services/PackageSearch";
 import { onlineLookupsEnabled } from "../services/Settings";
 import { isValidPackageId, isValidPackageVersion } from "../utils/nugetAudit";
-import { buildDashboardState, DashboardState, findAction } from "./DashboardState";
+import { buildDashboardState, DashboardAlignment, DashboardState, findAction } from "./DashboardState";
+import { DASHBOARD_STRINGS } from "./dashboardStrings";
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -27,14 +30,32 @@ export type DashboardMessage =
   | { command: "applyAction"; actionId: string }
   | { command: "previewAction"; actionId: string }
   | { command: "showDependencies"; packageId: string }
-  | { command: "openAdvisory"; url: string };
+  | { command: "openAdvisory"; url: string }
+  | { command: "searchPackages"; query: string; online: boolean }
+  | { command: "addPackage"; packageId: string; version?: string };
+
+/** One search result as the page shows it. */
+export interface DashboardSearchHit {
+  id: string;
+  version: string;
+  description?: string;
+  /** "local" for the NuGet cache, or the package source name. */
+  source: string;
+}
+
+export interface DashboardSearchResult {
+  hits: DashboardSearchHit[];
+  problems: string[];
+  error?: string;
+}
 
 /** What the extension sends to the page. */
 export type DashboardHostMessage =
   | { type: "state"; state: DashboardState }
-  | { type: "loading" };
+  | { type: "loading" }
+  | ({ type: "searchResults"; query: string } & DashboardSearchResult);
 
-const ACTION_ID = /^(patch|minor|(update|pin|replace):[A-Za-z0-9_.-]{1,100})$/;
+const ACTION_ID = /^(patch|minor|(update|pin|replace|align):[A-Za-z0-9_.-]{1,100})$/;
 
 export function isActionId(value: unknown): value is string {
   return typeof value === "string" && ACTION_ID.test(value);
@@ -84,6 +105,22 @@ export function readDashboardMessage(message: unknown): DashboardMessage | undef
       return isValidPackageId(value.packageId) ? { command: "showDependencies", packageId: value.packageId } : undefined;
     case "openAdvisory":
       return isAdvisoryUrl(value.url) ? { command: "openAdvisory", url: value.url } : undefined;
+    case "searchPackages":
+      return typeof value.query === "string" && isValidSearchQuery(value.query.trim())
+        ? { command: "searchPackages", query: value.query.trim(), online: value.online === true }
+        : undefined;
+    case "addPackage":
+      if (!isValidPackageId(value.packageId)) {
+        return undefined;
+      }
+      if (value.version !== undefined && value.version !== "" && !isValidPackageVersion(value.version)) {
+        return undefined;
+      }
+      return {
+        command: "addPackage",
+        packageId: value.packageId,
+        version: typeof value.version === "string" && value.version ? value.version : undefined,
+      };
     default:
       return undefined;
   }
@@ -94,6 +131,22 @@ export interface DashboardPage {
   nonce: string;
   scriptUri: string;
   styleUri: string;
+  /** Translated page strings, keyed by the English text. */
+  strings?: Record<string, string>;
+  /** The display language, for the html lang attribute. */
+  language?: string;
+}
+
+/** The translated strings the page script needs. */
+export function dashboardStrings(): Record<string, string> {
+  const strings: Record<string, string> = {};
+  for (const key of DASHBOARD_STRINGS) {
+    const value = vscode.l10n.t(key);
+    if (value !== key) {
+      strings[key] = value;
+    }
+  }
+  return strings;
 }
 
 const ICONS: Record<string, string> = {
@@ -115,6 +168,7 @@ const ICONS: Record<string, string> = {
   ext: '<path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v3.5c0 .3-.2.5-.5.5H3c-.3 0-.5-.2-.5-.5V5c0-.3.2-.5.5-.5h3.5"/>',
   graph: '<circle cx="4" cy="4" r="1.6"/><circle cx="12" cy="4" r="1.6"/><circle cx="8" cy="12" r="1.6"/><path d="M5.2 5.2 7 10.6M10.8 5.2 9 10.6"/>',
   warn: '<path d="M8 2 1.8 13h12.4L8 2Z"/><path d="M8 6.5v3M8 11.3v.1"/>',
+  plus: '<path d="M8 3v10M3 8h10"/>',
   lock: '<rect x="3" y="7" width="10" height="7" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
 };
 
@@ -141,23 +195,26 @@ export function dashboardHtml(page: DashboardPage): string {
     `img-src ${page.cspSource}`,
     `font-src ${page.cspSource}`,
   ].join("; ");
+  const t = (text: string) => escapeHtml(vscode.l10n.t(text));
   const sortHead = (key: string, label: string) =>
-    `<th data-sort="${key}"><button type="button">${label}${icon("down", "sm sort-ind")}</button></th>`;
+    `<th data-sort="${key}"><button type="button">${t(label)}${icon("down", "sm sort-ind")}</button></th>`;
+  const lang = escapeHtml((page.language || "en").replace(/[^A-Za-z0-9-]/g, "") || "en");
+  const strings = escapeHtml(JSON.stringify(page.strings ?? {}));
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="${escapeHtml(csp)}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${escapeHtml(page.styleUri)}">
-  <title>PackageHub Dashboard</title>
+  <title>${t("PackageHub Dashboard")}</title>
 </head>
-<body class="is-loading">
+<body class="is-loading" data-l10n="${strings}">
   <svg width="0" height="0" class="defs" aria-hidden="true"><defs>${iconDefs()}</defs></svg>
   <div class="app">
     <header class="card header">
-      <div class="ring live" id="ring" role="img" aria-label="Health score">
+      <div class="ring live" id="ring" role="img" aria-label="${t("Health score")}">
         <svg viewBox="0 0 84 84" aria-hidden="true">
           <circle class="track" cx="42" cy="42" r="36" fill="none" stroke-width="8"/>
           <circle class="value" id="ring-value" cx="42" cy="42" r="36" fill="none" stroke-width="8"/>
@@ -166,10 +223,10 @@ export function dashboardHtml(page: DashboardPage): string {
       </div>
       <span class="sk skel-ring skel"></span>
       <div class="title-block">
-        <h1>Workspace health
+        <h1>${t("Workspace health")}
           <span class="verdict live" id="verdict"></span>
           <span class="info live" id="formula-info">
-            <button class="info-btn" type="button" aria-describedby="formula-tip" aria-label="How the score is calculated">${icon("info")}</button>
+            <button class="info-btn" type="button" aria-describedby="formula-tip" aria-label="${t("How the score is calculated")}">${icon("info")}</button>
             <span class="tooltip" role="tooltip" id="formula-tip"></span>
           </span>
         </h1>
@@ -180,29 +237,29 @@ export function dashboardHtml(page: DashboardPage): string {
       <div class="header-actions">
         <div class="scan-meta" id="scan-meta"></div>
         <div class="btn-row">
-          <button class="btn secondary" type="button" data-action="showFeeds">${icon("feed", "sm")}Feeds</button>
-          <button class="btn" type="button" data-action="refresh">${icon("refresh", "sm")}Rescan</button>
+          <button class="btn secondary" type="button" data-action="showFeeds">${icon("feed", "sm")}${t("Feeds")}</button>
+          <button class="btn" type="button" data-action="refresh">${icon("refresh", "sm")}${t("Rescan")}</button>
         </div>
       </div>
     </header>
 
     <div class="notices" id="notices"></div>
 
-    <section class="kpis" id="kpis" aria-label="Summary"></section>
+    <section class="kpis" id="kpis" aria-label="${t("Summary")}"></section>
 
     <div class="main">
-      <section class="card panel" aria-label="Packages">
+      <section class="card panel" aria-label="${t("Packages")}">
         <div class="panel-head">
-          <h2>Packages <span class="count live" id="row-count"></span></h2>
-          <span class="filter-pill" id="filter-pill"><span id="filter-pill-text"></span><button type="button" data-action="clearFilter" aria-label="Clear filter">${icon("x", "sm")}</button></span>
+          <h2>${t("Packages")} <span class="count live" id="row-count"></span></h2>
+          <span class="filter-pill" id="filter-pill"><span id="filter-pill-text"></span><button type="button" data-action="clearFilter" aria-label="${t("Clear filter")}">${icon("x", "sm")}</button></span>
           <span class="spacer"></span>
           <span class="sort-label live" id="sort-label"></span>
-          <div class="seg" role="group" aria-label="Dependency type" id="kind-seg">
-            <button type="button" data-kind="all" class="is-on">All</button>
-            <button type="button" data-kind="direct">Direct</button>
-            <button type="button" data-kind="transitive">Transitive</button>
+          <div class="seg" role="group" aria-label="${t("Dependency type")}" id="kind-seg">
+            <button type="button" data-kind="all" class="is-on">${t("All")}</button>
+            <button type="button" data-kind="direct">${t("Direct")}</button>
+            <button type="button" data-kind="transitive">${t("Transitive")}</button>
           </div>
-          <label class="search">${icon("search", "sm")}<input id="search" type="search" placeholder="Search packages, advisories, projects" aria-label="Search packages"></label>
+          <label class="search">${icon("search", "sm")}<input id="search" type="search" placeholder="${t("Search packages, advisories, projects")}" aria-label="${t("Search packages")}"></label>
         </div>
         <div class="progress skel"></div>
         <div class="progress live-progress"></div>
@@ -213,7 +270,7 @@ export function dashboardHtml(page: DashboardPage): string {
               <th></th>
               ${sortHead("name", "Package")}
               ${sortHead("current", "Current")}
-              <th>Suggested</th>
+              <th>${t("Suggested")}</th>
               ${sortHead("change", "Change")}
               ${sortHead("severity", "Severity")}
               ${sortHead("projects", "Projects")}
@@ -225,21 +282,31 @@ export function dashboardHtml(page: DashboardPage): string {
         <div class="skel" id="skel-rows"></div>
       </section>
 
-      <aside class="card panel" aria-label="Recommended actions">
+      <aside class="card panel" aria-label="${t("Recommended actions")}">
         <div class="panel-head">
           <div class="tabs" role="tablist">
-            <button type="button" role="tab" data-tab="actions" class="is-on">${icon("bolt")}Recommended actions <span class="count live" id="act-count"></span></button>
-            <button type="button" role="tab" data-tab="feeds">${icon("feed")}Feeds <span class="count live" id="feed-count"></span></button>
+            <button type="button" role="tab" data-tab="actions" class="is-on">${icon("bolt")}${t("Recommended actions")} <span class="count live" id="act-count"></span></button>
+            <button type="button" role="tab" data-tab="feeds">${icon("feed")}${t("Feeds")} <span class="count live" id="feed-count"></span></button>
+            <button type="button" role="tab" data-tab="add">${icon("plus")}${t("Add package")}</button>
           </div>
         </div>
         <div class="actions-body live" id="actions"></div>
         <div class="actions-body live is-hidden" id="feeds"></div>
+        <div class="actions-body live is-hidden" id="add">
+          <label class="search add-search">${icon("search", "sm")}<input id="add-query" type="search" maxlength="100" placeholder="${t("Package name, for example Serilog")}" aria-label="${t("Search for a package to add")}"></label>
+          <div class="btn-row">
+            <button class="btn secondary" type="button" data-action="addSearch">${t("Search the local cache")}</button>
+            <button class="btn ghost" type="button" data-action="addSearchFeeds">${t("Search package sources")}</button>
+          </div>
+          <div class="feeds-note">${t("The local NuGet cache is searched first, with no network request. The package sources are searched only when you ask, through dotnet package search.")}</div>
+          <div id="add-results"></div>
+        </div>
         <div class="actions-body skel" id="skel-actions"></div>
         <div class="actions-foot live">${icon("lock", "sm")}<span id="actions-foot"></span></div>
       </aside>
     </div>
 
-    <section class="card heat" id="heat" aria-label="Projects"></section>
+    <section class="card heat" id="heat" aria-label="${t("Projects")}"></section>
   </div>
   <script nonce="${nonce}" src="${escapeHtml(page.scriptUri)}"></script>
 </body>
@@ -281,11 +348,27 @@ export async function currentDashboardState(): Promise<DashboardState> {
     verdict: (packageId, url, version) => advisoryVerdict(packageId, url, version),
     firstFixed: (packageId, url, current) => firstFixedVersion(packageId, url, current),
     relativePath: (filePath) => vscode.workspace.asRelativePath(filePath),
+    alignments: currentAlignments(),
   });
+}
+
+function currentAlignments(): DashboardAlignment[] {
+  const entries = ScanState.allEntries();
+  return alignablePackages(entries)
+    .flatMap((id) => planAlignment(id, entries))
+    .map((plan) => ({
+      packageId: plan.packageId,
+      major: plan.major,
+      target: plan.target,
+      moves: plan.moves.map((move) => ({ projectName: move.projectName, from: move.from })),
+      aligned: plan.aligned,
+    }));
 }
 
 export class HealthDashboardPanel {
   public static currentPanel: HealthDashboardPanel | undefined;
+  /** Runs a package search for the Add package tab. Set by the extension. */
+  public static searchHandler: ((query: string, online: boolean) => Promise<DashboardSearchResult>) | undefined;
   private static scanning = false;
   private readonly _panel: vscode.WebviewPanel;
   private _disposables: vscode.Disposable[] = [];
@@ -305,6 +388,8 @@ export class HealthDashboardPanel {
       nonce: makeNonce(),
       scriptUri: webview.asWebviewUri(vscode.Uri.joinPath(media, "dashboard.js")).toString(),
       styleUri: webview.asWebviewUri(vscode.Uri.joinPath(media, "dashboard.css")).toString(),
+      strings: dashboardStrings(),
+      language: vscode.env.language,
     });
   }
 
@@ -321,7 +406,7 @@ export class HealthDashboardPanel {
 
     const panel = vscode.window.createWebviewPanel(
       "packageHubDashboard",
-      "PackageHub Dashboard",
+      vscode.l10n.t("PackageHub Dashboard"),
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -385,7 +470,25 @@ export class HealthDashboardPanel {
       case "previewAction":
         void this.previewAction(message.actionId);
         break;
+      case "searchPackages":
+        void this.search(message.query, message.online);
+        break;
+      case "addPackage":
+        void vscode.commands.executeCommand("packageHub.addPackage", { packageId: message.packageId, version: message.version });
+        break;
     }
+  }
+
+  private async search(query: string, online: boolean) {
+    let result: DashboardSearchResult;
+    try {
+      result = HealthDashboardPanel.searchHandler
+        ? await HealthDashboardPanel.searchHandler(query, online)
+        : { hits: [], problems: [] };
+    } catch (error) {
+      result = { hits: [], problems: [], error: error instanceof Error ? error.message : String(error) };
+    }
+    await this._panel.webview.postMessage({ type: "searchResults", query, ...result } satisfies DashboardHostMessage);
   }
 
   private async applyAction(actionId: string) {
@@ -416,6 +519,13 @@ export class HealthDashboardPanel {
         const update = action.updates[0];
         if (update && isValidPackageId(update.packageId)) {
           await vscode.commands.executeCommand("packageHub.showDependencyGraph", { packageId: update.packageId });
+        }
+        break;
+      }
+      case "align": {
+        const update = action.updates[0];
+        if (update && isValidPackageId(update.packageId)) {
+          await vscode.commands.executeCommand("packageHub.alignVersions", { packageId: update.packageId });
         }
         break;
       }

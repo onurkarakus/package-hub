@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import { PackageInfo } from "../models/PackageInfo";
 import { FeedHealthState } from "../services/FeedHealth";
 import { computeHealthScore, HealthScore, ScoreSeverity } from "../services/HealthScore";
@@ -70,7 +71,7 @@ export interface DashboardProject {
     deprecated: number;
 }
 
-export type DashboardActionKind = "patch" | "update" | "pin" | "replace" | "minor";
+export type DashboardActionKind = "patch" | "update" | "pin" | "replace" | "minor" | "align";
 
 export interface DashboardUpdate {
     packageId: string;
@@ -152,6 +153,16 @@ export interface DashboardInput {
     firstFixed(packageId: string, advisoryUrl: string, current: string): string | undefined;
     /** Turns a project file path into the text shown on the page. */
     relativePath?(filePath: string): string;
+    /** Packages whose direct references use more than one version in a major. */
+    alignments?: DashboardAlignment[];
+}
+
+export interface DashboardAlignment {
+    packageId: string;
+    major: number;
+    target: string;
+    moves: { projectName: string; from: string }[];
+    aligned: string[];
 }
 
 const MAX_SINGLE_ACTIONS = 3;
@@ -347,7 +358,7 @@ function buildPackage(input: DashboardInput, item: Merged): DashboardPackage {
     const rawAdvisories = item.vulnerable ? advisoriesOf(item.vulnerable) : [];
     const deprecatedEntry = item.deprecated?.entries?.find((entry) => entry.deprecationReasons?.length || entry.alternativePackage);
     const deprecated = item.deprecated
-        ? (deprecatedEntry?.deprecationReasons?.join(", ") || "Deprecated")
+        ? (deprecatedEntry?.deprecationReasons?.join(", ") || vscode.l10n.t("Deprecated"))
         : undefined;
     const alternative = deprecatedEntry?.alternativePackage;
     const parents = uniq((lead.transitiveOrigins || item.vulnerable?.transitiveOrigins || [])
@@ -411,8 +422,8 @@ function buildPackage(input: DashboardInput, item: Merged): DashboardPackage {
         note: stale
             ? {
                 tone: "warn",
-                text: `dotnet still reports ${lead.id}, but it is not in the resolved package graph of ${transitiveIn.join(", ")}. `
-                    + "The warning may be left over from an earlier restore, so no pin is suggested. Restore and scan again.",
+                text: vscode.l10n.t("dotnet still reports {0}, but it is not in the resolved package graph of {1}.", lead.id, transitiveIn.join(", "))
+                    + " " + vscode.l10n.t("The warning may be left over from an earlier restore, so no pin is suggested. Restore and scan again."),
             }
             : packageNote(input, lead.id, kind, suggested, highestPatch, advisories, pinnedIn(updateIn, transitiveIn), parents, deprecated, alternative, !!item.vulnerable),
     };
@@ -460,7 +471,7 @@ function packageNote(
     if (vulnerable && advisories.length === 0) {
         return {
             tone: "warn",
-            text: `dotnet lists ${id} as vulnerable but gives no advisory link, so PackageHub cannot check which version fixes it.`,
+            text: vscode.l10n.t("dotnet lists {0} as vulnerable but gives no advisory link, so PackageHub cannot check which version fixes it.", id),
         };
     }
     if (advisories.length > 0) {
@@ -468,30 +479,30 @@ function packageNote(
             return {
                 tone: "warn",
                 text: input.advisorySource
-                    ? "The local advisory data names no version that closes every advisory."
-                    : "No advisory ranges are loaded. Restore once with NuGetAudit on, or turn on packageHub.onlineLookups.",
+                    ? vscode.l10n.t("The local advisory data names no version that closes every advisory.")
+                    : vscode.l10n.t("No advisory ranges are loaded. Restore once with NuGetAudit on, or turn on packageHub.onlineLookups."),
             };
         }
-        const count = advisories.length === 1 ? "the advisory" : `all ${advisories.length} advisories`;
+        const count = advisories.length === 1 ? vscode.l10n.t("the advisory") : vscode.l10n.t("all {0} advisories", advisories.length);
         if (kind === "transitive") {
-            const from = parents.length > 0 ? ` It comes in through ${parents.join(", ")}; updating that may move it too.` : "";
+            const from = parents.length > 0 ? " " + vscode.l10n.t("It comes in through {0}; updating that may move it too.", parents.join(", ")) : "";
             return {
                 tone: "warn",
-                text: `${suggested} closes ${count}. ${id} is not referenced directly, so the update pins it in ${transitiveIn.join(", ")}.${from}`,
+                text: vscode.l10n.t("{0} closes {1}. {2} is not referenced directly, so the update pins it in {3}.{4}", suggested, count, id, transitiveIn.join(", "), from),
             };
         }
         if (suggested === highestPatch) {
-            return { tone: "ok", text: `${suggested} is the highest patch and closes ${count}.` };
+            return { tone: "ok", text: vscode.l10n.t("{0} is the highest patch and closes {1}.", suggested, count) };
         }
-        const patchText = highestPatch ? ` The highest patch, ${highestPatch}, does not.` : "";
-        return { tone: "warn", text: `${suggested} is the first version that closes ${count}.${patchText} Review the changes before you update.` };
+        const patchText = highestPatch ? " " + vscode.l10n.t("The highest patch, {0}, does not.", highestPatch) : "";
+        return { tone: "warn", text: vscode.l10n.t("{0} is the first version that closes {1}.{2} Review the changes before you update.", suggested, count, patchText) };
     }
     if (deprecated) {
         return {
             tone: "warn",
             text: alternative
-                ? `Deprecated (${deprecated}). NuGet lists ${alternative} as the alternative.`
-                : `Deprecated (${deprecated}). NuGet lists no alternative.`,
+                ? vscode.l10n.t("Deprecated ({0}). NuGet lists {1} as the alternative.", deprecated, alternative)
+                : vscode.l10n.t("Deprecated ({0}). NuGet lists no alternative.", deprecated),
         };
     }
     return undefined;
@@ -624,28 +635,28 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
                 .filter((advisory) => input.verdict(pkg.id, advisory.url, pkg.highestPatch!) === "closed")
                 .map((advisory) => advisory.id);
             const open = pkg.advisories.length - closed.length;
-            const tail = closed.length > 0 ? ` · closes ${closed.join(", ")}` : "";
-            const stays = open > 0 ? ` · ${open} stay${open === 1 ? "s" : ""} open` : "";
+            const tail = closed.length > 0 ? ` · ${vscode.l10n.t("closes {0}", closed.join(", "))}` : "";
+            const stays = open > 0 ? ` · ${open === 1 ? vscode.l10n.t("1 stays open") : vscode.l10n.t("{0} stay open", open)}` : "";
             return `${pkg.id} ${pkg.current} → ${pkg.highestPatch}${tail}${stays}`;
         });
         const files = filesFor(input, patchable.flatMap((pkg) => findInfo(input, pkg.id)));
-        lines.push(files.length > 0 ? `Edits ${files.join(", ")}.` : "dotnet add package writes the versions to the project files.");
-        lines.push("dotnet lists the highest patches again before anything is written.");
+        lines.push(files.length > 0 ? vscode.l10n.t("Edits {0}.", files.join(", ")) : vscode.l10n.t("dotnet add package writes the versions to the project files."));
+        lines.push(vscode.l10n.t("dotnet lists the highest patches again before anything is written."));
         actions.push({
             id: "patch",
             kind: "patch",
-            title: `Apply ${patchable.length} patch update${patchable.length === 1 ? "" : "s"}`,
+            title: patchable.length === 1 ? vscode.l10n.t("Apply 1 patch update") : vscode.l10n.t("Apply {0} patch updates", patchable.length),
             badge: "patch",
             description: closes > 0
-                ? "Patch versions in the same minor. They close advisories without a major bump."
-                : "Patch versions in the same minor. Low risk.",
+                ? vscode.l10n.t("Patch versions in the same minor. They close advisories without a major bump.")
+                : vscode.l10n.t("Patch versions in the same minor. Low risk."),
             updates: patchable.map((pkg) => ({ packageId: pkg.id, from: pkg.current, to: pkg.highestPatch!, change: "patch" })),
             closes,
             projects: uniq(patchable.flatMap((pkg) => pkg.directIn)),
             files,
             score: after > score.score ? { from: score.score, to: after } : undefined,
-            button: `Apply ${patchable.length} update${patchable.length === 1 ? "" : "s"}`,
-            preview: { heading: `Highest patch: ${patchable.length} update${patchable.length === 1 ? "" : "s"}`, lines },
+            button: patchable.length === 1 ? vscode.l10n.t("Apply 1 update") : vscode.l10n.t("Apply {0} updates", patchable.length),
+            preview: { heading: patchable.length === 1 ? vscode.l10n.t("Highest patch: 1 update") : vscode.l10n.t("Highest patch: {0} updates", patchable.length), lines },
         });
     }
 
@@ -660,16 +671,20 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
         actions.push({
             id: `update:${pkg.id}`,
             kind: "update",
-            title: `${pkg.id} to ${version}`,
+            title: vscode.l10n.t("{0} to {1}", pkg.id, version),
             badge: pkg.change,
             description: pkg.highestPatch
-                ? `No patch closes ${pkg.advisories.length === 1 ? "the advisory" : "these advisories"}; ${pkg.highestPatch} is still affected.`
-                : `The first version that closes ${pkg.advisories.length === 1 ? "the advisory" : "every advisory"}.`,
+                ? (pkg.advisories.length === 1
+                    ? vscode.l10n.t("No patch closes the advisory; {0} is still affected.", pkg.highestPatch)
+                    : vscode.l10n.t("No patch closes these advisories; {0} is still affected.", pkg.highestPatch))
+                : (pkg.advisories.length === 1
+                    ? vscode.l10n.t("The first version that closes the advisory.")
+                    : vscode.l10n.t("The first version that closes every advisory.")),
             updates: [{ packageId: pkg.id, from: pkg.current, to: version, change: pkg.change }],
             closes,
             projects: pkg.updateIn.map((target) => target.name),
             files: filesFor(input, findInfo(input, pkg.id)),
-            button: "Review & apply",
+            button: vscode.l10n.t("Review & apply"),
             preview: summaryFor(input, pkg, version),
         });
     }
@@ -684,16 +699,16 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
         actions.push({
             id: `pin:${pkg.id}`,
             kind: "pin",
-            title: `Pin ${pkg.id} to ${version}`,
+            title: vscode.l10n.t("Pin {0} to {1}", pkg.id, version),
             badge: pkg.change,
             description: pkg.parents.length > 0
-                ? `Transitive through ${pkg.parents.join(", ")}. A direct reference pins the fixed version.`
-                : "Transitive. A direct reference pins the fixed version.",
+                ? vscode.l10n.t("Transitive through {0}. A direct reference pins the fixed version.", pkg.parents.join(", "))
+                : vscode.l10n.t("Transitive. A direct reference pins the fixed version."),
             updates: [{ packageId: pkg.id, from: pkg.current, to: version, change: pkg.change }],
             closes: closedCount(pkg, version, input),
             projects: pkg.updateIn.map((target) => target.name),
             files: input.cpm && input.centralFiles.length > 0 ? input.centralFiles : [],
-            button: "Review & pin",
+            button: vscode.l10n.t("Review & pin"),
             preview: summaryFor(input, pkg, version),
         });
     }
@@ -703,22 +718,22 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
         actions.push({
             id: `replace:${pkg.id}`,
             kind: "replace",
-            title: `Replace ${pkg.id}`,
+            title: vscode.l10n.t("Replace {0}", pkg.id),
             badge: "replace",
-            description: `Deprecated (${pkg.deprecated}). NuGet lists ${pkg.alternative} as the alternative.`,
+            description: vscode.l10n.t("Deprecated ({0}). NuGet lists {1} as the alternative.", pkg.deprecated ?? "", pkg.alternative ?? ""),
             updates: [{ packageId: pkg.id, from: pkg.current, to: pkg.alternative!, change: "replace" }],
             closes: 0,
             projects: pkg.directIn,
             files: filesFor(input, findInfo(input, pkg.id)),
-            warning: "Code changes needed",
-            button: "Show dependency graph",
+            warning: vscode.l10n.t("Code changes needed"),
+            button: vscode.l10n.t("Show dependency graph"),
             preview: {
-                heading: `Replace ${pkg.id} ${pkg.current}`,
+                heading: vscode.l10n.t("Replace {0} {1}", pkg.id, pkg.current),
                 lines: [
-                    `${pkg.id} is deprecated (${pkg.deprecated}).`,
-                    `NuGet lists ${pkg.alternative} as the alternative. It is a different package, so the code that uses it has to change.`,
-                    `Referenced directly in: ${pkg.directIn.join(", ")}.`,
-                    "PackageHub does not make this change for you.",
+                    vscode.l10n.t("{0} is deprecated ({1}).", pkg.id, pkg.deprecated ?? ""),
+                    vscode.l10n.t("NuGet lists {0} as the alternative. It is a different package, so the code that uses it has to change.", pkg.alternative ?? ""),
+                    vscode.l10n.t("Referenced directly in: {0}.", pkg.directIn.join(", ")),
+                    vscode.l10n.t("PackageHub does not make this change for you."),
                 ],
             },
         });
@@ -730,25 +745,59 @@ function buildActions(input: DashboardInput, packages: DashboardPackage[], score
         actions.push({
             id: "minor",
             kind: "minor",
-            title: "Review highest-minor updates",
+            title: vscode.l10n.t("Review highest-minor updates"),
             badge: "minor",
-            description: `${behind.length} direct package${behind.length === 1 ? " is" : "s are"} behind the latest version. Minor updates stay in the same major.`,
+            description: behind.length === 1
+                ? vscode.l10n.t("1 direct package is behind the latest version. Minor updates stay in the same major.")
+                : vscode.l10n.t("{0} direct packages are behind the latest version. Minor updates stay in the same major.", behind.length),
             updates: [],
             closes: 0,
             projects: uniq(behind.flatMap((pkg) => pkg.directIn)),
             files: filesFor(input, behind.flatMap((pkg) => findInfo(input, pkg.id))),
-            button: "List minor updates",
+            button: vscode.l10n.t("List minor updates"),
             preview: {
-                heading: "Highest minor",
+                heading: vscode.l10n.t("Highest minor"),
                 lines: [
-                    ...behind.map((pkg) => `${pkg.id} ${pkg.current} · latest ${pkg.latest}`),
-                    "dotnet lists the highest minor of each package, and you confirm before anything is written. Major versions and prereleases are not written.",
+                    ...behind.map((pkg) => vscode.l10n.t("{0} {1} · latest {2}", pkg.id, pkg.current, pkg.latest ?? "")),
+                    vscode.l10n.t("dotnet lists the highest minor of each package, and you confirm before anything is written. Major versions and prereleases are not written."),
+                ],
+            },
+        });
+    }
+
+    // 6. Drifted versions of one package inside the same major.
+    for (const plan of (input.alignments ?? []).filter((item) => item.moves.length > 0).slice(0, MAX_SINGLE_ACTIONS)) {
+        const badge: DashboardChange = plan.moves.every((move) => sameMinor(move.from, plan.target)) ? "patch" : "minor";
+        const versions = uniq([...plan.moves.map((move) => move.from), plan.target]);
+        actions.push({
+            id: `align:${plan.packageId}`,
+            kind: "align",
+            title: vscode.l10n.t("Align {0} to {1}", plan.packageId, plan.target),
+            badge,
+            description: vscode.l10n.t("The projects use {0} versions of {1} in major version {2}. Aligning moves them to the highest one already in use.", versions.length, plan.packageId, plan.major),
+            updates: plan.moves.map((move) => ({ packageId: plan.packageId, from: move.from, to: plan.target, change: badge })),
+            closes: 0,
+            projects: plan.moves.map((move) => move.projectName),
+            files: [],
+            button: vscode.l10n.t("Review & align"),
+            preview: {
+                heading: vscode.l10n.t("Align {0} to {1}", plan.packageId, plan.target),
+                lines: [
+                    ...plan.moves.map((move) => `${move.projectName}: ${move.from} → ${plan.target}`),
+                    ...(plan.aligned.length > 0 ? [vscode.l10n.t("Already at {0}: {1}.", plan.target, plan.aligned.join(", "))] : []),
+                    vscode.l10n.t("Only direct references move. Versions never cross a major version or go down."),
                 ],
             },
         });
     }
 
     return actions;
+}
+
+function sameMinor(a: string, b: string): boolean {
+    const pa = a.split(/[.-]/);
+    const pb = b.split(/[.-]/);
+    return pa[0] === pb[0] && pa[1] === pb[1];
 }
 
 function bySeverity(a: DashboardPackage, b: DashboardPackage): number {
@@ -784,10 +833,10 @@ export function buildDashboardState(input: DashboardInput): DashboardState {
 
     const notices: string[] = [];
     if (input.auditDataGap) {
-        notices.push("The audit source did not return vulnerability data. Vulnerable counts may be low.");
+        notices.push(vscode.l10n.t("The audit source did not return vulnerability data. Vulnerable counts may be low."));
     }
     if (input.unreadableProjects.length > 0) {
-        notices.push(`Not checked: ${input.unreadableProjects.join(", ")}.`);
+        notices.push(vscode.l10n.t("Not checked: {0}.", input.unreadableProjects.join(", ")));
     }
 
     return {

@@ -1,3 +1,4 @@
+import { l10n } from "vscode";
 import { compareNuGetVersions, isComparableVersion, sameNuGetVersion } from "../utils/nugetAudit";
 
 export interface PackageLineFacts {
@@ -122,7 +123,7 @@ export function packageLineMark(
         return {
             kind: "deprecated",
             text: withVersion(STOPPED, newer),
-            hover: newer ? `Deprecated. Newer version ${newer}.` : "Deprecated.",
+            hover: newer ? l10n.t("Deprecated. Newer version {0}.", newer) : l10n.t("Deprecated."),
         };
     }
 
@@ -139,7 +140,7 @@ export function packageLineMark(
     return {
         kind: "outdated",
         text: withVersion(CROSS, newer),
-        hover: newer ? `Outdated. Newer version ${newer}.` : "Outdated.",
+        hover: newer ? l10n.t("Outdated. Newer version {0}.", newer) : l10n.t("Outdated."),
     };
 }
 
@@ -154,7 +155,7 @@ function currentMark(
     return {
         kind: "current",
         text: CHECK,
-        hover: "Current.",
+        hover: l10n.t("Current."),
     };
 }
 
@@ -223,6 +224,6 @@ function withVersion(icon: string, version: string | undefined): string {
 
 function vulnerableHover(severity: string | undefined, newer: string | undefined): string {
     const word = (severity || "").trim().toLowerCase();
-    const head = word ? `Vulnerable, ${word} severity.` : "Vulnerable.";
-    return newer ? `${head} Newer version ${newer}.` : head;
+    const head = word ? l10n.t("Vulnerable, {0} severity.", word) : l10n.t("Vulnerable.");
+    return newer ? `${head} ${l10n.t("Newer version {0}.", newer)}` : head;
 }
